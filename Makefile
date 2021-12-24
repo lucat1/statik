@@ -1,8 +1,11 @@
 CC:=gcc
-CFLAGS+=-Dversion=0 -Ddebug=0
+CFLAGS+=-Wall -pedantic
 
 statik: statik.o
 	gcc -o statik $^
+
+debug: CFLAGS+=-DDEBUG=1
+debug: statik
 
 statik.o: statik.c
 

@@ -3,6 +3,11 @@
 #include <stdio.h>
 
 #define VERSION 1
+#ifdef DEBUG
+#define verbose(format, ...) fprintf(stderr, "(verbose) "format, __VA_ARGS__)
+#else
+#define verbose(format, ...)
+#endif
 
 void usage()
 {
@@ -33,7 +38,7 @@ int main(int argc, char *argv[])
         exit(EXIT_SUCCESS);
         break;
       default: // unkown flag
-        printf("Unkown flag: %s\n", opt);
+        printf("Unkown flag: %c\n", opt);
         usage();
         exit(EXIT_FAILURE);
     }
@@ -41,7 +46,7 @@ int main(int argc, char *argv[])
 
   // reqiure at least 2 arguments (src, dest)
   if (argc-optind > 2 || argc-optind < 1)  {
-    printf("Wrong amount of arguments.\n", argc-optind);
+    printf("Wrong amount of arguments.\n");
     usage();
     exit(EXIT_FAILURE);
   }
@@ -49,9 +54,10 @@ int main(int argc, char *argv[])
   if (argc-optind == 2)
     src = argv[argc-2];
 
-  printf("recursive=%d\n", recursive);
-  printf("template=%s\n", template);
-  printf("src=%s, dest=%s\n", src, dest);
+  verbose("recursive=%d\n", recursive);
+  verbose("template=%s\n", template);
+  verbose("src=%s\n", src);
+  verbose("dest=%s\n", dest);
 
   exit(EXIT_SUCCESS);
 }
