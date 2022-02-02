@@ -83,7 +83,7 @@ func copy(src, dest string) {
 func filter(entries []fs.FileInfo) []fs.FileInfo {
 	filtered := []fs.FileInfo{}
 	for _, entry := range entries {
-		if include.MatchString(entry.Name()) && !exclude.MatchString(entry.Name()) {
+		if entry.IsDir() || (include.MatchString(entry.Name()) && !exclude.MatchString(entry.Name())) {
 			filtered = append(filtered, entry)
 		}
 	}
