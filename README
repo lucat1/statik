@@ -1,0 +1,9 @@
+Simple tool to generate a static listing of a directory, similarly to what web
+servers like Apache and lighthttpd offer. Can be used to host directories on
+static hosting sites such as Github Pages or Netlify.
+
+You can obtain the binary version of this software via:
+$ curl -sf https://goblin.reaper.im/github.com/lucat1/statik | sh
+Or any other compliant service such as https://gobinaries.com/.
+
+A list of customization opitons can be found by looking at the program's help.
