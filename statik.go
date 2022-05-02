@@ -25,8 +25,8 @@ var (
 	baseDir, outDir string
 	baseUrl         *url.URL = nil
 
-	include, exclude              *regexp.Regexp = nil, nil
-	empty, recursive, sortEntries bool
+	include, exclude                           *regexp.Regexp = nil, nil
+	empty, recursive, sortEntries, converLinks bool
 )
 
 func bytes(b int64) string {
@@ -60,9 +60,13 @@ func header(rel string) string {
 	return str
 }
 
-func line(name, path string, modTime time.Time, size int64) string {
+func line(name, path string, modTime time.Time, size int64, link bool) string {
 	space := strings.Repeat(" ", nameSpace-len(name))
-	return fmt.Sprintf("<a href=\"%s\">%s</a>%s %-"+dateSpace+"s %-"+sizeSpace+"s\n", join(path), name, space, modTime.Format(formatLayout), bytes(size))
+	url := path
+	if !link {
+		url = join(path)
+	}
+	return fmt.Sprintf("<a href=\"%s\">%s</a>%s %-"+dateSpace+"s %-"+sizeSpace+"s\n", url, name, space, modTime.Format(formatLayout), bytes(size))
 }
 
 func footer(date time.Time) string {
@@ -126,9 +130,19 @@ func generate(dir string) bool {
 		if pth == outDir {
 			continue
 		}
+
+		if strings.HasSuffix(pth, ".link") {
+			url, err := ioutil.ReadFile(pth)
+			if err != nil {
+				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
+			}
+			content += line(entry.Name()[:len(entry.Name())-5], string(url), entry.ModTime(), 0, true)
+			continue
+		}
+
 		// Only list directories when recursing and only those which are not empty
 		if !entry.IsDir() || recursive && generate(pth) {
-			content += line(entry.Name(), path.Join(rel, entry.Name()), entry.ModTime(), entry.Size())
+			content += line(entry.Name(), path.Join(rel, entry.Name()), entry.ModTime(), entry.Size(), true)
 		}
 
 		// Copy all files over to the web root
@@ -155,6 +169,7 @@ func main() {
 	emp := flag.Bool("empty", false, "Whether to list empty directories")
 	s := flag.Bool("sort", true, "Sort files A-z and by type")
 	b := flag.String("b", "http://localhost", "The base URL")
+	l := flag.Bool("l", false, "Convert .link files to anchor tags")
 	flag.Parse()
 
 	args := flag.Args()
@@ -174,6 +189,7 @@ func main() {
 	log.Println("\tExclude:\t", *e)
 	log.Println("\tRecursive:\t", *r)
 	log.Println("\tEmpty:\t\t", *emp)
+	log.Println("\tConvert links:\t\t", *l)
 	log.Println("\tSource:\t\t", src)
 	log.Println("\tDestination:\t", dest)
 	log.Println("\tBase URL:\t", *b)
@@ -188,6 +204,7 @@ func main() {
 	recursive = *r
 	empty = *emp
 	sortEntries = *s
+	converLinks = *l
 
 	var wd string
 	if !filepath.IsAbs(src) || !filepath.IsAbs(dest) {
