@@ -142,7 +142,7 @@ func generate(dir string) bool {
 
 		// Only list directories when recursing and only those which are not empty
 		if !entry.IsDir() || recursive && generate(pth) {
-			content += line(entry.Name(), path.Join(rel, entry.Name()), entry.ModTime(), entry.Size(), true)
+			content += line(entry.Name(), path.Join(rel, entry.Name()), entry.ModTime(), entry.Size(), false)
 		}
 
 		// Copy all files over to the web root
