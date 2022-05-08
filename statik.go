@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	formatLayout                    = time.RFC822
-	nameSpace, dateSpace, sizeSpace = 50, "30", "8"
+	formatLayout                                       = time.RFC822
+	minNameSpace, minNameSpacing, dateSpace, sizeSpace = 50, 10, "30", "8"
+	linkSuffix                                         = ".link"
 )
 
 var (
@@ -60,7 +61,7 @@ func header(rel string) string {
 	return str
 }
 
-func line(name, path string, modTime time.Time, size int64, link bool) string {
+func line(name string, nameSpace int, path string, modTime time.Time, size int64, link bool) string {
 	space := strings.Repeat(" ", nameSpace-len(name))
 	url := path
 	if !link {
@@ -123,6 +124,19 @@ func generate(dir string) bool {
 		log.Fatalf("Could not create output index.html: %s\n%s\n", htmlPath, err)
 	}
 
+	nameSpace := minNameSpace
+	for _, entry := range entries {
+		l := len(entry.Name())
+		if strings.HasSuffix(entry.Name(), linkSuffix) {
+			l -= len(linkSuffix)
+		}
+		l += minNameSpacing
+
+		if l > nameSpace {
+			nameSpace = l
+		}
+	}
+
 	content := header(rel)
 	for _, entry := range entries {
 		pth := path.Join(dir, entry.Name())
@@ -131,18 +145,18 @@ func generate(dir string) bool {
 			continue
 		}
 
-		if strings.HasSuffix(pth, ".link") {
+		if strings.HasSuffix(pth, linkSuffix) {
 			url, err := ioutil.ReadFile(pth)
 			if err != nil {
 				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
 			}
-			content += line(entry.Name()[:len(entry.Name())-5], string(url), entry.ModTime(), 0, true)
+			content += line(entry.Name()[:len(entry.Name())-len(linkSuffix)], nameSpace, string(url), entry.ModTime(), 0, true)
 			continue
 		}
 
 		// Only list directories when recursing and only those which are not empty
 		if !entry.IsDir() || recursive && generate(pth) {
-			content += line(entry.Name(), path.Join(rel, entry.Name()), entry.ModTime(), entry.Size(), false)
+			content += line(entry.Name(), nameSpace, path.Join(rel, entry.Name()), entry.ModTime(), entry.Size(), false)
 		}
 
 		// Copy all files over to the web root
