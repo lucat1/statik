@@ -106,7 +106,11 @@ func generate(dir string) bool {
 	}
 	if sortEntries {
 		sort.Slice(entries, func(i, j int) bool {
-			return entries[i].IsDir() && !entries[j].IsDir()
+			isFirstEntryDir := entries[i].IsDir()
+			isSecondEntryDir := entries[j].IsDir()
+			return isFirstEntryDir && !isSecondEntryDir ||
+				(isFirstEntryDir || !isSecondEntryDir) &&
+					entries[i].Name() < entries[j].Name()
 		})
 	}
 
