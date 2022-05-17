@@ -1,17 +1,28 @@
 /* NOTE: this stylesheet is compressed and directly embedded into the go code */
 :root {
   --b: #282828;
-  --f: #ebdbb2;
+  --f: #fbf1c7;
+  --fa: #ebdbb2;
+  --fb: #fe8019;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme:dark) {
   --b: #fbf1c7;
   --f: #3c3836;
 }
-
-* {
+body {
   background: var(--b);
   color: var(--f);
   font-family: monospace;
   font-size: 16px;
+  padding: 2rem 2rem;
+  line-height:1.8;
+}
+a {
+  color: var(--fa);
+  text-decoration: none;
+  border-bottom: 1px solid;
+}
+.d{
+  color:var(--fb);
 }
