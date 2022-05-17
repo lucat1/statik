@@ -10,17 +10,20 @@
   --f: #ebdbb2;
 }
 
-body {
-  background: var(--b);
+* {
   color: var(--f);
-  font-family: monospace;
+  background: var(--b);
+}
+
+body {
   font-size: 16px;
-  padding: 2rem 2rem;
-  line-height:1.8;
+  font-family: monospace;
+  margin: 0;
+  padding: 1.5rem;
+  line-height: 1.8;
 }
 
 a {
-  color: var(--fa);
   text-decoration: none;
   border-bottom: 1px solid;
 }
