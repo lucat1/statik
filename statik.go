@@ -14,11 +14,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+	_"embed"
+	"github.com/tdewolff/minify/v2"
+	"github.com/tdewolff/minify/v2/css"
 )
+//go:embed "style.css"
+var style string
 
 const (
 	formatLayout                                       = time.RFC822
-	minNameSpace, minNameSpacing, dateSpace, sizeSpace = 50, 10, "30", "8"
 	linkSuffix                                         = ".link"
 )
 
@@ -52,26 +56,25 @@ func join(rel string) string {
 	return res
 }
 
-func header(rel string) string {
-	path := path.Join(baseUrl.Path + rel)
-	str := "<html><head><meta name='viewport' content='width=device-width'><style>:root{--b:#fbf1c7;--f:#282828;--d:#af3a03}@media (prefers-color-scheme:dark){:root{--b:#282828;--f:#fbf1c7;--d:#fe8019}}*{color:var(--f);background:var(--b)}body{font-size:16px;font-family:monospace;margin:0;padding:1.5rem;line-height:1.8}a{text-decoration:none;border-bottom:1px solid}.d{color:var(--d)}</style><title>Index of " + path + "</title></head><body><h1>Index of " + path + "</h1><hr><pre>"
+func header(rel string, css string) string {
+	path := path.Join(baseUrl.Path + rel)	
+	str := "<html><head><meta name='viewport' content='width=device-width'><style>" + css + "</style><title>Index of " + path + "</title></head><body><h1>Index of " + path + "</h1><hr><pre>"
 	if rel != "/" {
 		str += "<a href=\"" + join(rel+"/..") + "\" class=\"d\">..</a>\n"
 	}
 	return str
 }
 
-func line(name string, nameSpace int, path string, modTime time.Time, isDir bool, size int64, link bool) string {
-	space := strings.Repeat(" ", nameSpace-len(name))
+func line(name string, path string, modTime time.Time, isDir bool, size int64, link bool) string {
 	url := path
 	if !link {
 		url = join(path)
 	}
 	extra := ""
 	if isDir {
-		extra = " class=\"d\""
+		extra = "class=\"d\""
 	}
-	return fmt.Sprintf("<a href=\"%s\"%s>%s</a>%s %-"+dateSpace+"s %-"+sizeSpace+"s\n", url, extra, name, space, modTime.Format(formatLayout), bytes(size))
+	return fmt.Sprintf("<div><a href=\"%s\" %s>%s</a><p class=\"t\">%s</p><p>%s</p></div>", url, extra, name, modTime.Format(formatLayout), bytes(size))
 }
 
 func footer(date time.Time) string {
@@ -99,7 +102,7 @@ func filter(entries []fs.FileInfo) []fs.FileInfo {
 	return filtered
 }
 
-func generate(dir string) bool {
+func generate(dir string, css string) bool {
 	entries, err := ioutil.ReadDir(dir)
 	if err != nil {
 		log.Fatalf("Could not read input directory: %s\n%s\n", dir, err)
@@ -132,20 +135,7 @@ func generate(dir string) bool {
 		log.Fatalf("Could not create output index.html: %s\n%s\n", htmlPath, err)
 	}
 
-	nameSpace := minNameSpace
-	for _, entry := range entries {
-		l := len(entry.Name())
-		if strings.HasSuffix(entry.Name(), linkSuffix) {
-			l -= len(linkSuffix)
-		}
-		l += minNameSpacing
-
-		if l > nameSpace {
-			nameSpace = l
-		}
-	}
-
-	content := header(rel)
+	content := header(rel, css)
 	for _, entry := range entries {
 		pth := path.Join(dir, entry.Name())
 		// Avoid recursive infinite loop
@@ -158,13 +148,13 @@ func generate(dir string) bool {
 			if err != nil {
 				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
 			}
-			content += line(entry.Name()[:len(entry.Name())-len(linkSuffix)], nameSpace, string(url), entry.ModTime(), entry.IsDir(), 0, true)
+			content += line(entry.Name()[:len(entry.Name())-len(linkSuffix)], string(url), entry.ModTime(), entry.IsDir(), 0, true)
 			continue
 		}
 
 		// Only list directories when recursing and only those which are not empty
-		if !entry.IsDir() || recursive && generate(pth) {
-			content += line(entry.Name(), nameSpace, path.Join(rel, entry.Name()), entry.ModTime(), entry.IsDir(), entry.Size(), false)
+		if !entry.IsDir() || recursive && generate(pth, css) {
+			content += line(entry.Name(), path.Join(rel, entry.Name()), entry.ModTime(), entry.IsDir(), entry.Size(), false)
 		}
 
 		// Copy all files over to the web root
@@ -249,5 +239,13 @@ func main() {
 	if baseUrl, err = url.Parse(*b); err != nil {
 		log.Fatalf("Could not parse base URL: %s\n%s\n", *b, err)
 	}
-	generate(baseDir)
+	m := minify.New()
+	m.AddFunc("text/css", css.Minify)
+	out, err := m.String("text/css", style)
+	if err != nil {
+		log.Fatalf("Could not minify css")
+		panic(err)
+	}
+	log.Printf("css code minified correctly")
+	generate(baseDir, out)
 }

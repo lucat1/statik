@@ -17,7 +17,6 @@
   color: var(--f);
   background: var(--b);
 }
-
 body {
   font-size: 16px;
   font-family: monospace;
@@ -25,12 +24,29 @@ body {
   padding: 1.5rem;
   line-height: 1.8;
 }
-
 a {
-  text-decoration: none;
-  border-bottom: 1px solid;
+  word-wrap: break-word;
+  min-width: 0;
+  white-space: pre-wrap;
+  text-underline-position: under;
 }
-
 .d {
   color: var(--d);
+}
+div {
+  display: grid;
+  align-items: center;
+  width: 100%;
+  grid-template: 1fr / 7fr 3fr 2fr;
+}
+p {
+  min-width: 0;
+}
+@media (max-width:880px) {
+  div{
+    grid-template: 1fr / 7fr 3fr;
+  }
+  .t{
+    display: none;
+  }
 }
