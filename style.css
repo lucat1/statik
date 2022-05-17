@@ -1,17 +1,36 @@
 /* NOTE: this stylesheet is compressed and directly embedded into the go code */
 :root {
-  --b: #282828;
-  --f: #ebdbb2;
+  --b: #fbf1c7;
+  --f: #282828;
+  --d: #fe8019;
 }
 
 @media (prefers-color-scheme: dark) {
-  --b: #fbf1c7;
-  --f: #3c3836;
+  :root {
+    --b: #282828;
+    --f: #fbf1c7;
+    --d: #af3a03;
+  }
 }
 
 * {
-  background: var(--b);
   color: var(--f);
-  font-family: monospace;
+  background: var(--b);
+}
+
+body {
   font-size: 16px;
+  font-family: monospace;
+  margin: 0;
+  padding: 1.5rem;
+  line-height: 1.8;
+}
+
+a {
+  text-decoration: none;
+  border-bottom: 1px solid;
+}
+
+.d {
+  color: var(--d);
 }
