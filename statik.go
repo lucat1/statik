@@ -54,7 +54,7 @@ func join(rel string) string {
 
 func header(rel string) string {
 	path := path.Join(baseUrl.Path + rel)
-	str := "<html><head><meta name='viewport' content='width=device-width'><style>:root{--b:#282828;--f:#fbf1c7;--fa:#ebdbb2;--fb:#fe8019}@media(prefers-color-scheme:dark){--b:#fbf1c7;--f:#3c3836}body{background:var(--b);color:var(--f);font-family:monospace;font-size:16px;padding:2rem 2rem;line-height:1.8}a{color:var(--fa);text-decoration:none;border-bottom:1px solid}.d{color:var(--fb)}</style><title>Index of " + path + "</title></head><body><h1>Index of " + path + "</h1><hr><pre>"
+	str := "<html><head><meta name='viewport' content='width=device-width'><style>:root{--b:#282828;--f:#ebdbb2;--d:#fe8019}body{background:var(--b);color:var(--f);font-family:monospace;font-size:16px;padding:2rem 2rem;line-height:1.8}a{text-decoration:none;border-bottom:1px solid}.d{color:var(--d)}</style><title>Index of " + path + "</title></head><body><h1>Index of " + path + "</h1><hr><pre>"
 	if rel != "/" {
 		str += "<a href=\"" + join(rel+"/..") + "\" class=\"d\">..</a>\n"
 	}
@@ -67,11 +67,11 @@ func line(name string, nameSpace int, path string, modTime time.Time, isDir bool
 	if !link {
 		url = join(path)
 	}
-	classString := ""
+	extra := ""
 	if isDir {
-		classString = "class=\"d\""
+		extra = " class=\"d\""
 	}
-	return fmt.Sprintf("<a href=\"%s\" %s>%s</a>%s %-"+dateSpace+"s %-"+sizeSpace+"s\n", url, classString, name, space, modTime.Format(formatLayout), bytes(size))
+	return fmt.Sprintf("<a href=\"%s\"%s>%s</a>%s %-"+dateSpace+"s %-"+sizeSpace+"s\n", url, extra, name, space, modTime.Format(formatLayout), bytes(size))
 }
 
 func footer(date time.Time) string {
