@@ -1,13 +1,16 @@
 /* NOTE: this stylesheet is compressed and directly embedded into the go code */
 :root {
-  --b: #282828;
-  --f: #fbf1c7;
+  --b: #fbf1c7;
+  --f: #282828;
   --d: #fe8019;
 }
 
-@media (prefers-color-scheme:dark) {
-  --b: #fbf1c7;
-  --f: #ebdbb2;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --b: #282828;
+    --f: #fbf1c7;
+    --d: #af3a03;
+  }
 }
 
 * {

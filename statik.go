@@ -54,7 +54,7 @@ func join(rel string) string {
 
 func header(rel string) string {
 	path := path.Join(baseUrl.Path + rel)
-	str := "<html><head><meta name='viewport' content='width=device-width'><style>:root{--b:#282828;--f:#fbf1c7;--d:#fe8019}*{color:var(--f);background:var(--b)}body{font-size:16px;font-family:monospace;margin:0;padding:1.5rem;line-height:1.8}a{text-decoration:none;border-bottom:1px solid}.d{color:var(--d)}</style><title>Index of " + path + "</title></head><body><h1>Index of " + path + "</h1><hr><pre>"
+	str := "<html><head><meta name='viewport' content='width=device-width'><style>:root{--b:#fbf1c7;--f:#282828;--d:#fe8019;}@media(prefers-color-scheme:dark){:root{--b:#282828;--f:#fbf1c7;--d:#af3a03;}}*{color:var(--f);background:var(--b);}body{font-size:16px;font-family:monospace;margin:0;padding:1.5rem;line-height:1.8;}a{text-decoration:none;border-bottom:1px solid;}.d{color:var(--d);}</style><title>Index of " + path + "</title></head><body><h1>Index of " + path + "</h1><hr><pre>"
 	if rel != "/" {
 		str += "<a href=\"" + join(rel+"/..") + "\" class=\"d\">..</a>\n"
 	}
