@@ -1,13 +1,13 @@
 /* NOTE: this stylesheet is compressed and directly embedded into the go code */
 :root {
   --b: #282828;
-  --f: #ebdbb2;
+  --f: #fbf1c7;
   --d: #fe8019;
 }
 
 @media (prefers-color-scheme:dark) {
   --b: #fbf1c7;
-  --f: #3c3836;
+  --f: #ebdbb2;
 }
 
 body {
@@ -20,10 +20,11 @@ body {
 }
 
 a {
+  color: var(--fa);
   text-decoration: none;
   border-bottom: 1px solid;
 }
 
 .d {
-  color:var(--d);
+  color: var(--d);
 }
