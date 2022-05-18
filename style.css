@@ -37,14 +37,14 @@ div {
   display: grid;
   align-items: center;
   width: 100%;
-  grid-template: 1fr / 7fr 3fr 2fr;
+  grid-template-columns: 7fr 3fr 2fr;
 }
 p {
   min-width: 0;
 }
 @media (max-width:880px) {
   div{
-    grid-template: 1fr / 7fr 3fr;
+    grid-template-columns: 7fr 3fr;
   }
   .t{
     display: none;
