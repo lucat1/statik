@@ -4,7 +4,6 @@ import (
 	"bytes"
 	_ "embed"
 	"flag"
-	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
@@ -144,7 +143,6 @@ func generate(m *minify.M, dir string, parts []string) bool {
 		url = path.Join(url, part)
 		p = append(p, Dir{Name: part, URL: withBaseURL(url)})
 	}
-	fmt.Println(parts)
 	gen(header, Header{
 		BasePath: Dir{
 			Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
@@ -204,7 +202,6 @@ func generate(m *minify.M, dir string, parts []string) bool {
 	if err := m.Minify("text/html", html, out); err != nil {
 		log.Fatalf("Could not write to index.html: %s\n%s\n", htmlPath, err)
 	}
-	fmt.Println(out.String())
 	if err := html.Close(); err != nil {
 		log.Fatalf("Could not write to close index.html: %s\n%s\n", htmlPath, err)
 	}
