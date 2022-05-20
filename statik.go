@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	_ "embed"
 	"flag"
 	"fmt"
+	"html/template"
+	"io"
 	"io/fs"
 	"io/ioutil"
 	"log"
@@ -14,128 +18,72 @@ import (
 	"sort"
 	"strings"
 	"time"
-	_"embed"
-	"html/template"
+
+	"github.com/dustin/go-humanize"
 	"github.com/tdewolff/minify/v2"
 	"github.com/tdewolff/minify/v2/css"
+	"github.com/tdewolff/minify/v2/html"
+	"github.com/tdewolff/minify/v2/js"
 )
 
+type Dir struct {
+	Name string
+	URL  string
+}
+
 type Header struct {
-	Path string
-	Mystyle template.CSS
+	BasePath   Dir
+	Parts      []Dir
+	FullPath   string
+	Stylesheet template.CSS
 }
 
 type Footer struct {
-	Date string
-}
-
-type Dotdot struct {
-	Path string
+	Date time.Time
 }
 
 type Line struct {
-	Url 	string
-	Name 	string
-	Time 	string
-	Size 	string
-	Extra 	string
+	IsDir bool
+	Name  string
+	URL   string
+	Size  string
+	Date  time.Time
 }
 
-const (
-	formatLayout                                       = time.RFC822
-	linkSuffix                                         = ".link"
-)
+const linkSuffix = ".link"
 
 var (
 	baseDir, outDir string
-	baseUrl         *url.URL = nil
+	baseURL         *url.URL = nil
 
 	include, exclude                           *regexp.Regexp = nil, nil
 	empty, recursive, sortEntries, converLinks bool
 
-	//go:embed "default-components/style.css"
-	styleFile string
-	//go:embed "default-components/header.gohtml"
-	headerFile string
-	//go:embed "default-components/footer.gohtml"
-	footerFile string
-	//go:embed "default-components/dotdot.gohtml"
-	dotdotFile string
-	//go:embed "default-components/line.gohtml"
-	lineFile string
+	//go:embed "style.css"
+	style string
+	//go:embed "header.gohtml"
+	rawHeader string
+	//go:embed "line.gohtml"
+	rawLine string
+	//go:embed "footer.gohtml"
+	rawFooter string
 
-	headerTemplate	*template.Template
-	footerTemplate	*template.Template
-	dotdotTemplate	*template.Template
-	lineTemplate 	*template.Template
+	header, footer, line *template.Template
 )
 
-func bytes(b int64) string {
-	const unit = 1000
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "kMGTPE"[exp])
-}
-
 // joins the baseUrl path with the given relative path and returns the url as a string
-func join(rel string) string {
-	cpy := baseUrl.Path
-	baseUrl.Path = path.Join(baseUrl.Path, rel)
-	res := baseUrl.String()
-	baseUrl.Path = cpy
+func withBaseURL(rel string) string {
+	cpy := baseURL.Path
+	baseURL.Path = path.Join(baseURL.Path, rel)
+	res := baseURL.String()
+	baseURL.Path = cpy
 	return res
 }
 
-func header(rel string) string {
-	path := path.Join(baseUrl.Path + rel)
-	var out strings.Builder
-	h := Header{
-		Path:path, 
-		Mystyle:template.CSS(styleFile)}
-	if err := headerTemplate.Execute(&out, h); err != nil {
-		log.Fatalf("could not generate header lines for path: %s", path)
+func gen(tmpl *template.Template, data interface{}, out io.Writer) {
+	if err := tmpl.Execute(out, data); err != nil {
+		log.Fatalf("could not generate template for the %s section:\n%s\n", tmpl.Name(), err)
 	}
-	if rel != "/" {
-		d := Dotdot{join(rel+"/..")}
-		if err := dotdotTemplate.Execute(&out, d); err != nil {
-			log.Fatalf("could not generate dotdot line for path: %s", path)
-		}
-		
-	}
-	return out.String()
-}
-
-func line(name string, path string, modTime time.Time, isDir bool, size int64, link bool) string {
-	url := path
-	var out strings.Builder
-	if !link {
-		url = join(path)
-	}
-	extra := ""
-	if isDir {
-		extra = "class=\"d\""
-	}
-
-	l := Line{url, name, modTime.Format(formatLayout), bytes(size), extra}
-	if err := lineTemplate.Execute(&out, l); err != nil {
-		log.Fatalf("could not generate line template on path: %s", path)
-	}
-	return out.String()
-}
-
-func footer(date time.Time) string {
-	var out strings.Builder
-	f := Footer{date.Format(formatLayout)}
-	if err := footerTemplate.Execute(&out, f); err != nil {
-		log.Fatalf("could not generate footer template")
-	}
-	return out.String()
 }
 
 func copy(src, dest string) {
@@ -159,7 +107,7 @@ func filter(entries []fs.FileInfo) []fs.FileInfo {
 	return filtered
 }
 
-func generate(dir string) bool {
+func generate(m *minify.M, dir string, parts []string) bool {
 	entries, err := ioutil.ReadDir(dir)
 	if err != nil {
 		log.Fatalf("Could not read input directory: %s\n%s\n", dir, err)
@@ -178,21 +126,43 @@ func generate(dir string) bool {
 		})
 	}
 
-	if !strings.HasSuffix(dir, "/") {
-		dir += "/"
+	rel := path.Join(parts...)
+	outDir := path.Join(outDir, rel)
+	if err := os.Mkdir(outDir, os.ModePerm); err != nil {
+		log.Fatalf("Could not create output *sub*directory: %s\n%s\n", outDir, err)
 	}
-	rel := strings.Replace(dir, baseDir, "", 1)
-	out := path.Join(outDir, rel)
-	if err := os.Mkdir(out, os.ModePerm); err != nil {
-		log.Fatalf("Could not create output *sub*directory: %s\n%s\n", out, err)
-	}
-	htmlPath := path.Join(out, "index.html")
+	htmlPath := path.Join(outDir, "index.html")
 	html, err := os.OpenFile(htmlPath, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		log.Fatalf("Could not create output index.html: %s\n%s\n", htmlPath, err)
 	}
 
-	content := header(rel)
+	out := new(bytes.Buffer)
+	// Generate the header and the double dots back anchor when appropriate
+	p, url := []Dir{}, ""
+	for _, part := range parts {
+		url = path.Join(url, part)
+		p = append(p, Dir{Name: part, URL: withBaseURL(url)})
+	}
+	fmt.Println(parts)
+	gen(header, Header{
+		BasePath: Dir{
+			Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
+			URL:  baseURL.String(),
+		},
+		Parts:      p,
+		FullPath:   path.Join(baseURL.Path+rel) + "/",
+		Stylesheet: template.CSS(style),
+	}, out)
+	if len(parts) != 0 {
+		gen(line, Line{
+			IsDir: true,
+			Name:  "..",
+			URL:   withBaseURL(path.Join(rel, "..")),
+			Size:  humanize.Bytes(0),
+		}, out)
+	}
+
 	for _, entry := range entries {
 		pth := path.Join(dir, entry.Name())
 		// Avoid recursive infinite loop
@@ -200,35 +170,63 @@ func generate(dir string) bool {
 			continue
 		}
 
+		data := Line{
+			IsDir: entry.IsDir(),
+			Name:  entry.Name(),
+			URL:   withBaseURL(path.Join(rel, entry.Name())),
+			Size:  humanize.Bytes(uint64(entry.Size())),
+			Date:  entry.ModTime(),
+		}
 		if strings.HasSuffix(pth, linkSuffix) {
+			data.Name = data.Name[:len(data.Name)-len(linkSuffix)]
+			data.Size = humanize.Bytes(0)
+
 			url, err := ioutil.ReadFile(pth)
 			if err != nil {
 				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
 			}
-			content += line(entry.Name()[:len(entry.Name())-len(linkSuffix)], string(url), entry.ModTime(), entry.IsDir(), 0, true)
+			data.URL = string(url)
+			gen(line, data, out)
 			continue
 		}
 
 		// Only list directories when recursing and only those which are not empty
-		if !entry.IsDir() || recursive && generate(pth) {
-			content += line(entry.Name(), path.Join(rel, entry.Name()), entry.ModTime(), entry.IsDir(), entry.Size(), false)
+		if !entry.IsDir() || recursive && generate(m, pth, append(parts, entry.Name())) {
+			gen(line, data, out)
 		}
 
 		// Copy all files over to the web root
 		if !entry.IsDir() {
-			copy(pth, path.Join(out, entry.Name()))
+			copy(pth, path.Join(outDir, entry.Name()))
 		}
 	}
-	content += footer(time.Now())
-	if n, err := html.Write([]byte(content)); err != nil || n != len(content) {
+	gen(footer, Footer{Date: time.Now()}, out)
+	if err := m.Minify("text/html", html, out); err != nil {
 		log.Fatalf("Could not write to index.html: %s\n%s\n", htmlPath, err)
 	}
+	fmt.Println(out.String())
 	if err := html.Close(); err != nil {
 		log.Fatalf("Could not write to close index.html: %s\n%s\n", htmlPath, err)
 	}
 	log.Printf("Generated data for directory: %s\n", dir)
 
 	return !empty
+}
+
+func loadTemplate(name string, path string, def *string, dest **template.Template) {
+	var (
+		content []byte
+		err     error
+	)
+	if path != "" {
+		if content, err = ioutil.ReadFile(path); err != nil {
+			log.Fatalf("Could not read %s template file %s:\n%s\n", name, path, err)
+		}
+		*def = string(content)
+	}
+	if *dest, err = template.New(name).Parse(*def); err != nil {
+		log.Fatalf("Could not parse %s template:\n%s\n", name, path, err)
+	}
 }
 
 func main() {
@@ -239,11 +237,10 @@ func main() {
 	s := flag.Bool("sort", true, "Sort files A-z and by type")
 	b := flag.String("b", "http://localhost", "The base URL")
 	l := flag.Bool("l", false, "Convert .link files to anchor tags")
-	argstyle := flag.String("style", "", "Add a custom style file gohtml")
-	argfooter := flag.String("footer", "", "Add a custom footer gohtml")
-	argheader := flag.String("header", "", "Add a custom header gohtml")
-	argdotdot := flag.String("dotdot", "", "Add a custom dotdot line gohtml")
-	argline := flag.String("line", "", "Add a custom line gohtml")
+	argstyle := flag.String("style", "", "Use a custom stylesheet file")
+	argfooter := flag.String("footer", "", "Use a custom footer template")
+	argheader := flag.String("header", "", "Use a custom header template")
+	argline := flag.String("line", "", "Use a custom line template")
 	flag.Parse()
 
 	args := flag.Args()
@@ -266,11 +263,10 @@ func main() {
 	log.Println("\tSource:\t\t", src)
 	log.Println("\tDestination:\t", dest)
 	log.Println("\tBase URL:\t", *b)
-	log.Println("\tstyle:\t\t",*argstyle)
-	log.Println("\tfooter:\t\t",*argfooter)
-	log.Println("\theader:\t\t",*argheader)
-	log.Println("\tdotdot:\t\t",*argdotdot)
-	log.Println("\tline:\t\t",*argline)
+	log.Println("\tStyle:\t\t", *argstyle)
+	log.Println("\tFooter:\t\t", *argfooter)
+	log.Println("\tHeader:\t\t", *argheader)
+	log.Println("\tline:\t\t", *argline)
 
 	var err error
 	if include, err = regexp.Compile(*i); err != nil {
@@ -302,58 +298,25 @@ func main() {
 			log.Fatalf("Could not remove output directory previous contents: %s\n%s\n", outDir, err)
 		}
 	}
-	if baseUrl, err = url.Parse(*b); err != nil {
+	if baseURL, err = url.Parse(*b); err != nil {
 		log.Fatalf("Could not parse base URL: %s\n%s\n", *b, err)
 	}
-	var content []byte
-	
-	if *argheader != "" { 
-		if content, err = ioutil.ReadFile(*argheader); err != nil {
-			log.Fatalf("Could not open header file template")
-		}
-		headerFile = string(content)
-	}
-	if headerTemplate, err = template.New("header").Parse(headerFile); err != nil { log.Fatalf("could not create header template")}
-	
-	if *argfooter != "" {
-		if content, err = ioutil.ReadFile(*argfooter); err != nil {
-			log.Fatalf("Could not open header file template")
-		} 
-		footerFile = string(content)
-	}
-	if footerTemplate, err = template.New("footer").Parse(footerFile); err != nil { log.Fatalf("could not create footer template")}
-	
-	if *argdotdot != "" { 
-		if content, err = ioutil.ReadFile(*argdotdot); err != nil {
-			log.Fatalf("Could not open header file template")
-		}
-		dotdotFile = string(content)
-	}
-	if dotdotTemplate, err = template.New("dotdot").Parse(dotdotFile); err != nil { log.Fatalf("could not create dotdot template")}
-	
-	if *argline != "" { 
-		if content, err = ioutil.ReadFile(*argline); err != nil {
-			log.Fatalf("Could not open header file template")
-		}
-		lineFile = string(content)
-	}
-	if lineTemplate, err = template.New("line").Parse(lineFile); err != nil { log.Fatalf("could not create line template")}
-	
+
+	loadTemplate("header", *argheader, &rawHeader, &header)
+	loadTemplate("line", *argline, &rawLine, &line)
+	loadTemplate("footer", *argfooter, &rawFooter, &footer)
+
 	if *argstyle != "" {
+		var content []byte
 		if content, err = ioutil.ReadFile(*argstyle); err != nil {
-			log.Fatalf("Could not open header file template")
+			log.Fatalf("Could not read stylesheet file %s:\n%s\n", *argstyle, err)
 		}
-		styleFile = string(content)
+		style = string(content)
 	}
 
-	log.Printf("templates created correctly")
-	
 	m := minify.New()
 	m.AddFunc("text/css", css.Minify)
-	if styleFile, err = m.String("text/css", styleFile); err != nil {
-		log.Fatalf("Could not minify css")
-	}
-	log.Printf("css code minified correctly")
-	
-	generate(baseDir)
+	m.AddFunc("text/html", html.Minify)
+	m.AddFunc("application/javascript", js.Minify)
+	generate(m, baseDir, []string{})
 }
