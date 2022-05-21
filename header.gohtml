@@ -8,7 +8,7 @@
   <body>
     <h1>
       Index of
-      /<a href={{ .BasePath.URL }}>{{ .BasePath.Name }}</a>/{{ range $i,$a := .Parts }}<a href="{{ .URL }}">{{ .Name }}</a>/{{ end }}
+      {{ if not (eq (len .Root.Name) 0) }}/<a href={{ .Root.URL }}>{{ .Root.Name }}</a>{{ end }}/{{ range $i,$a := .Parts }}<a href="{{ .URL }}">{{ .Name }}</a>/{{ end }}
     </h1>
     <hr>
     <div>

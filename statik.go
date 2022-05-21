@@ -31,7 +31,7 @@ type Dir struct {
 }
 
 type Header struct {
-	BasePath   Dir
+	Root       Dir
 	Parts      []Dir
 	FullPath   string
 	Stylesheet template.CSS
@@ -144,7 +144,7 @@ func generate(m *minify.M, dir string, parts []string) bool {
 		p = append(p, Dir{Name: part, URL: withBaseURL(url)})
 	}
 	gen(header, Header{
-		BasePath: Dir{
+		Root: Dir{
 			Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
 			URL:  baseURL.String(),
 		},
@@ -256,7 +256,7 @@ func main() {
 	log.Println("\tExclude:\t", *e)
 	log.Println("\tRecursive:\t", *r)
 	log.Println("\tEmpty:\t\t", *emp)
-	log.Println("\tConvert links:\t\t", *l)
+	log.Println("\tConvert links:\t", *l)
 	log.Println("\tSource:\t\t", src)
 	log.Println("\tDestination:\t", dest)
 	log.Println("\tBase URL:\t", *b)
