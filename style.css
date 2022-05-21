@@ -1,56 +1,66 @@
 /* NOTE: this stylesheet is compressed and directly embedded into the go code */
 :root {
-    --b: #fbf1c7;
-    --f: #282828;
-    --d: #af3a03;
+  --b: #fbf1c7;
+  --f: #282828;
+  --d: #af3a03;
+}
+
+* {
+  color: var(--f);
+  background: var(--b);
+}
+
+body {
+  font-size: 16px;
+  font-family: monospace;
+  margin: 0;
+  padding: 1.5rem;
+  line-height: 1.8;
+}
+
+a {
+  word-wrap: break-word;
+  min-width: 0;
+  white-space: pre-wrap;
+  text-underline-position: under;
+}
+
+.d {
+  color: var(--d);
+}
+
+.g {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 7fr 3fr 2fr;
+}
+
+.g * {
+  margin: 0.5rem;
+}
+
+.g *:nth-child(3n + 3) {
+  text-align: right;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --b: #282828;
+    --f: #fbf1c7;
+    --d: #fe8019;
   }
-  
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --b: #282828;
-      --f: #fbf1c7;
-      --d: #fe8019;
-    }
+}
+
+@media (max-width: 880px) {
+  .g {
+    grid-template-columns: 7fr 3fr;
   }
-  
-  * {
-    color: var(--f);
-    background: var(--b);
+
+  .g * {
+    margin: 1rem;
   }
-  body {
-    font-size: 16px;
-    font-family: monospace;
-    margin: 0;
-    padding: 1.5rem;
-    line-height: 1.8;
+
+  .g *:nth-child(3n + 2) {
+    display: none;
   }
-  a {
-    word-wrap: break-word;
-    min-width: 0;
-    white-space: pre-wrap;
-    text-underline-position: under;
-  }
-  .d {
-    color: var(--d);
-  }
-  div {
-    display: grid;
-    align-items: center;
-    width: 100%;
-    grid-template-columns: 7fr 3fr 2fr;
-  }
-  p {
-    min-width: 0;
-    margin: 0.6rem;
-  }
-  @media (max-width:880px) {
-    div{
-      grid-template-columns: 7fr 3fr;
-    }
-    .t{
-      display: none;
-    }
-    p{
-      margin: 1.8rem;
-    }
-  }
+}

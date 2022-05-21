@@ -11,4 +11,4 @@
       {{ if not (eq (len .Root.Name) 0) }}/<a href={{ .Root.URL }}>{{ .Root.Name }}</a>{{ end }}/{{ range $i,$a := .Parts }}<a href="{{ .URL }}">{{ .Name }}</a>/{{ end }}
     </h1>
     <hr>
-    <div>
+    <div class="g">

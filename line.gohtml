@@ -1,5 +1,9 @@
 {{ if and .IsDir (eq .Name "..") }}
-  <a href="{{ .URL }}" class="d">{{ .Name }}</a><p class="t">{{ .Date.Format "02 Jan 06 15:04 MST" }}</p><p>{{ .Size }}</p>
+  <a href="{{ .URL }}" class="d">{{ .Name }}</a>
+  <p>{{ .Date.Format "02 Jan 06 15:04 MST" }}</p>
+  <p>{{ .Size }}</p>
 {{ else }}
-  <a href="{{ .URL }}" {{ if .IsDir }}class="d"{{ end }}>{{ .Name }}</a><p class="t">{{ .Date.Format "02 Jan 06 15:04 MST" }}</p><p>{{ .Size }}</p>
+  <a href="{{ .URL }}" {{ if .IsDir }}class="d"{{ end }}>{{ .Name }}</a>
+  <p>{{ .Date.Format "02 Jan 06 15:04 MST" }}</p>
+  <p>{{ .Size }}</p>
 {{ end }}
