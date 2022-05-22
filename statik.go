@@ -138,27 +138,32 @@ func generate(m *minify.M, dir string, parts []string) bool {
 
 	out := new(bytes.Buffer)
 	// Generate the header and the double dots back anchor when appropriate
-	p, url := []Dir{}, ""
-	for _, part := range parts {
-		url = path.Join(url, part)
-		p = append(p, Dir{Name: part, URL: withBaseURL(url)})
-	}
-	gen(header, Header{
-		Root: Dir{
-			Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
-			URL:  baseURL.String(),
-		},
-		Parts:      p,
-		FullPath:   path.Join(baseURL.Path+rel) + "/",
-		Stylesheet: template.CSS(style),
-	}, out)
-	if len(parts) != 0 {
-		gen(line, Line{
-			IsDir: true,
-			Name:  "..",
-			URL:   withBaseURL(path.Join(rel, "..")),
-			Size:  humanize.Bytes(0),
+	{
+		p, url := []Dir{}, ""
+		for _, part := range parts {
+			url = path.Join(url, part)
+			p = append(p, Dir{Name: part, URL: withBaseURL(url)})
+		}
+		gen(header, Header{
+			Root: Dir{
+				Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
+				URL:  baseURL.String(),
+			},
+			Parts:      p,
+			FullPath:   path.Join(baseURL.Path+rel) + "/",
+			Stylesheet: template.CSS(style),
 		}, out)
+	}
+	// Populte the back line
+	{
+		if len(parts) != 0 {
+			gen(line, Line{
+				IsDir: true,
+				Name:  "..",
+				URL:   withBaseURL(path.Join(rel, "..")),
+				Size:  humanize.Bytes(0),
+			}, out)
+		}
 	}
 
 	for _, entry := range entries {
@@ -179,11 +184,17 @@ func generate(m *minify.M, dir string, parts []string) bool {
 			data.Name = data.Name[:len(data.Name)-len(linkSuffix)]
 			data.Size = humanize.Bytes(0)
 
-			url, err := ioutil.ReadFile(pth)
+			raw, err := ioutil.ReadFile(pth)
 			if err != nil {
 				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
 			}
-			data.URL = string(url)
+			rawStr := string(raw)
+			u, err := url.Parse(rawStr[:len(rawStr)-1])
+			if err != nil {
+				log.Fatalf("Could not parse URL in file: %s\nThe value is: %s\n%s\n", pth, raw, err)
+			}
+
+			data.URL = u.String()
 			gen(line, data, out)
 			continue
 		}
