@@ -189,7 +189,7 @@ func generate(m *minify.M, dir string, parts []string) bool {
 				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
 			}
 			rawStr := string(raw)
-			u, err := url.Parse(rawStr[:len(rawStr)-1])
+			u, err := url.Parse(strings.TrimSpace(rawStr))
 			if err != nil {
 				log.Fatalf("Could not parse URL in file: %s\nThe value is: %s\n%s\n", pth, raw, err)
 			}
