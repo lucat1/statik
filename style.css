@@ -51,6 +51,12 @@ a {
   }
 }
 
+@media(max-width:600px) {
+    h1 {
+        font-size: 1.5em;
+    }
+}
+
 @media (max-width: 880px) {
   .g {
     grid-template-columns: 7fr 3fr;
