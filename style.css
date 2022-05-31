@@ -3,6 +3,8 @@
   --b: #fbf1c7;
   --f: #282828;
   --d: #af3a03;
+  font-family: monospace;
+  font-size: 16px;
 }
 
 * {
@@ -11,11 +13,13 @@
 }
 
 body {
-  font-size: 16px;
-  font-family: monospace;
   margin: 0;
   padding: 1.5rem;
   line-height: 1.8;
+}
+
+h1 {
+  font-size: 1.5rem;
 }
 
 a {
