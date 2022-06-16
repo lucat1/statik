@@ -7,6 +7,7 @@ import (
 	"flag"
 	"html/template"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"log"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/tdewolff/minify/v2"
 	"github.com/tdewolff/minify/v2/css"
 	"github.com/tdewolff/minify/v2/html"
@@ -26,31 +28,38 @@ import (
 )
 
 // Describes the state of every main variable of the program
-type ProgramState struct {
-	IsRecursive bool
-	IsEmpty     bool
-	EnableSort  bool
-	ConvertLink bool
+var (
+	//go:embed "style.css"
+	styleTemplate string
+	//go:embed "header.gohtml"
+	headerTemplate string
+	//go:embed "line.gohtml"
+	lineTemplate string
+	//go:embed "footer.gohtml"
+	footerTemplate string
 
-	// TODO: i have to convert these template string in other form, so that i can generalize the
-	// generation
-	StyleTemplate  string
-	FooterTemplate string
-	HeaderTemplate string
-	LineTemplate   string
+	header, footer, line *template.Template
+	minifier             *minify.M
 
-	SrcDir  string
-	DestDir string
+	srcDir  string
+	destDir string
 
-	IncludeRegEx    *regexp.Regexp
-	ExcludeRegEx    *regexp.Regexp
-	IncludeRegExStr string
-	ExcludeRegExStr string
-	URL             string
-	BaseURL         *url.URL
+	isRecursive     bool
+	isEmpty         bool
+	enableSort      bool
+	convertLink     bool
+	includeRegEx    *regexp.Regexp
+	excludeRegEx    *regexp.Regexp
+	includeRegExStr string
+	excludeRegExStr string
+	baseURL         *url.URL
+)
 
-	Minifier *minify.M
-}
+const (
+	linkSuffix  = ".link"
+	defaultSrc  = "./"
+	defaultDest = "site"
+)
 
 type Dir struct {
 	Name string
@@ -95,128 +104,108 @@ type Directory struct {
 	Name        string      `json:"name"`
 	Directories []Directory `json:"directories"`
 	Files       []File      `json:"files"`
-	Size        uint64      `json:"size"`
+	Size        int64       `json:"size"`
 	ModTime     time.Time   `json:"time"`
 }
 
 type FuzzyFile struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-	Mime string `json:"mime"`
+	Name       string   `json:"name"`
+	Path       string   `json:"path"`
+	SourcePath string   `json:"-"`
+	URL        *url.URL `json:"url"`
+	Mime       string   `json:"mime"`
 }
 
 type File struct {
 	FuzzyFile
-	Size    uint64    `json:"size"`
+	Size    int64     `json:"size"`
 	ModTime time.Time `json:"time"`
 }
 
-const linkSuffix = ".link"
-const defaultSrc = "./"
-const defaultDest = "site"
+// joins the baseURL with the given relative path in a new URL instance
+func withBaseURL(rel string) (url *url.URL, err error) {
+	url, err = url.Parse(baseURL.String())
+	if err != nil {
+		return
+	}
+	url.Path = path.Join(baseURL.Path, rel)
+	return
+}
 
-// WARNING: don't call this with directory FileInfo, not supported
-func getFile(file os.FileInfo, path string) File {
+func newFile(info os.FileInfo, dir string) (f File, err error) {
+	if info.IsDir() {
+		return File{}, errors.New("newFile has been called with a os.FileInfo if type Directory")
+	}
+
+	var (
+		rel  string
+		url  *url.URL
+		mime *mimetype.MIME
+	)
+	abs := path.Join(dir, info.Name())
+	if rel, err = filepath.Rel(srcDir, abs); err != nil {
+		return
+	}
+	if url, err = withBaseURL(rel); err != nil {
+		return
+	}
+	if mime, err = mimetype.DetectFile(abs); err != nil {
+		return
+	}
+
 	return File{
 		FuzzyFile: FuzzyFile{
-			Path: path,
-			Name: file.Name(),
-			Mime: "tmp", // TODO: make a function that returns the correct mime
+			Name: info.Name(),
+			Path: rel,
+			URL:  url,
+			Mime: mime.String(),
 		},
-		Size:    uint64(file.Size()),
-		ModTime: file.ModTime(),
-	}
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+	}, nil
 }
 
-// WARNING: don't call this with FileInfo that is not a directory, not supported
-func getDirectory(file os.FileInfo, path string) Directory {
-	return Directory{
-		Path:        path,
-		Name:        file.Name(),
-		Directories: []Directory{},
-		Files:       []File{},
-		Size:        uint64(file.Size()),
-		ModTime:     file.ModTime(),
-	}
-}
-
-// Separates files and directories
-func unpackFiles(fileInfo []os.FileInfo) ([]os.FileInfo, []os.FileInfo) {
-	var files []os.FileInfo
-	var dirs []os.FileInfo
-	for _, file := range fileInfo {
-		if !file.IsDir() {
-			files = append(files, file)
-		} else {
-			dirs = append(dirs, file)
-		}
-	}
-	return files, dirs
-}
-
-func IsPathValid(path string) error {
+func isDir(path string) (err error) {
 	dir, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
 	if !dir.IsDir() {
-		return errors.New("the given path does not correspond to a directory")
+		return errors.New("Expected a directory")
 	}
 	return nil
 }
 
-func GetDirectoryStructure(path string, recursive bool, directory *Directory) error {
-	err := IsPathValid(path)
-	if err != nil {
-		return err
+func (d Directory) isEmpty() bool {
+	return len(d.Directories) == 0 && len(d.Files) == 0
+}
+
+func GetDirectoryStructure(base string) (dir Directory, err error) {
+	var (
+		infos  []fs.FileInfo
+		subdir Directory
+		file   File
+	)
+	if infos, err = ioutil.ReadDir(base); err != nil {
+		return
 	}
 
-	filesInDir, err := ioutil.ReadDir(path)
-	if err != nil {
-		return err
-	}
-
-	files, dirs := unpackFiles(filesInDir)
-	for _, file := range files {
-		directory.Files = append(directory.Files, getFile(file, path))
-	}
-
-	for _, dir := range dirs {
-		directory.Directories = append(directory.Directories, getDirectory(dir, path))
-	}
-
-	if recursive {
-		for idx, dir := range directory.Directories {
-			dirName := filepath.Join(path, dir.Name)
-			err := GetDirectoryStructure(dirName, true, &directory.Directories[idx])
-			if err != nil {
-				return err
+	for _, info := range infos {
+		if info.IsDir() && isRecursive {
+			if subdir, err = GetDirectoryStructure(path.Join(base, info.Name())); err != nil {
+				return
 			}
+			if !subdir.isEmpty() {
+				dir.Directories = append(dir.Directories, subdir)
+			}
+		} else {
+			if file, err = newFile(info, base); err != nil {
+				return
+			}
+			dir.Files = append(dir.Files, file)
 		}
 	}
-	return nil
-}
-
-var (
-	//go:embed "style.css"
-	style string
-	//go:embed "header.gohtml"
-	rawHeader string
-	//go:embed "line.gohtml"
-	rawLine string
-	//go:embed "footer.gohtml"
-	rawFooter string
-
-	header, footer, line *template.Template
-)
-
-// joins the BaseUrl path with the given relative path and returns the url as a string
-func withBaseURL(state *ProgramState, rel string) string {
-	cpy := state.BaseURL.Path
-	state.BaseURL.Path = path.Join(state.BaseURL.Path, rel)
-	res := state.BaseURL.String()
-	state.BaseURL.Path = cpy
-	return res
+	return
 }
 
 func gen(tmpl *template.Template, data interface{}, out io.Writer) {
@@ -485,19 +474,42 @@ func clearDirectory(filePath string) {
 // handles every input parameter of the Program, returns it in ProgramState.
 // if something its wrong, the whole program just panick-exits
 func initProgram(state *ProgramState) {
-	state.IncludeRegExStr = *flag.String("i", ".*", "A regex pattern to include files into the listing")
-	state.ExcludeRegExStr = *flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
-	state.IsRecursive = *flag.Bool("r", true, "Recursively scan the file tree")
-	state.IsEmpty = *flag.Bool("empty", false, "Whether to list empty directories")
-	state.EnableSort = *flag.Bool("sort", true, "Sort files A-z and by type")
-	state.URL = *flag.String("b", "http://localhost", "The base URL")
-	state.ConvertLink = *flag.Bool("l", false, "Convert .link files to anchor tags")
-	state.StyleTemplate = *flag.String("style", "", "Use a custom stylesheet file")
-	state.FooterTemplate = *flag.String("footer", "", "Use a custom footer template")
-	state.HeaderTemplate = *flag.String("header", "", "Use a custom header template")
-	state.LineTemplate = *flag.String("line", "", "Use a custom line template")
-	state.SrcDir = defaultSrc
-	state.DestDir = defaultDest
+}
+
+func prepareDirectories(source, dest string) {
+	// TODO: add fix for the case where source = "../../" as discussed
+
+	// check inputDir is readable
+	var err error
+	_, err = os.OpenFile(source, os.O_RDONLY, 0666)
+	if err != nil && os.IsPermission(err) {
+		log.Fatalf("Could not read input directory: %s\n%s\n", source, err)
+	}
+
+	// check if outputDir is writable
+	_, err = os.OpenFile(dest, os.O_WRONLY, 0666)
+	if err != nil && os.IsPermission(err) {
+		log.Fatalf("Could not write in output directory: %s\n%s\n", dest, err)
+	}
+
+	clearDirectory(dest)
+}
+
+func main() {
+	var srcStructure Directory
+	includeRegExStr = *flag.String("i", ".*", "A regex pattern to include files into the listing")
+	excludeRegExStr = *flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
+	isRecursive = *flag.Bool("r", true, "Recursively scan the file tree")
+	isEmpty = *flag.Bool("empty", false, "Whether to list empty directories")
+	enableSort = *flag.Bool("sort", true, "Sort files A-z and by type")
+	rawURL := *flag.String("b", "http://localhost", "The base URL")
+	convertLink = *flag.Bool("l", false, "Convert .link files to anchor tags")
+	styleTemplate = *flag.String("style", "", "Use a custom stylesheet file")
+	footerTemplate = *flag.String("footer", "", "Use a custom footer template")
+	headerTemplate = *flag.String("header", "", "Use a custom header template")
+	lineTemplate = *flag.String("line", "", "Use a custom line template")
+	srcDir = defaultSrc
+	destDir = defaultDest
 	flag.Parse()
 
 	args := flag.Args()
@@ -526,7 +538,7 @@ func initProgram(state *ProgramState) {
 		log.Fatal("Invalid regexp for exclude matching", err)
 	}
 
-	state.BaseURL, err = url.Parse(state.URL)
+	URL, err = url.Parse(rawURL)
 	if err != nil {
 		log.Fatalf("Could not parse base URL: %s\n%s\n", state.URL, err)
 	}
@@ -550,33 +562,12 @@ func initProgram(state *ProgramState) {
 		}
 		style = string(content)
 	}
-}
-
-func prepareDirectories(source, dest string) {
-	// TODO: add fix for the case where source = "../../" as discussed
-
-	// check inputDir is readable
-	var err error
-	_, err = os.OpenFile(source, os.O_RDONLY, 0666)
-	if err != nil && os.IsPermission(err) {
-		log.Fatalf("Could not read input directory: %s\n%s\n", source, err)
+	err := isDir(state.SrcDir)
+	if err != nil {
+		return err
 	}
-
-	// check if outputDir is writable
-	_, err = os.OpenFile(dest, os.O_WRONLY, 0666)
-	if err != nil && os.IsPermission(err) {
-		log.Fatalf("Could not write in output directory: %s\n%s\n", dest, err)
-	}
-
-	clearDirectory(dest)
-}
-
-func main() {
-	var state ProgramState
-	var srcStructure Directory
-	initProgram(&state)
 	prepareDirectories(state.SrcDir, state.DestDir)
-	err := GetDirectoryStructure(state.SrcDir, state.IsRecursive, &srcStructure)
+	dir, err := GetDirectoryStructure(state.SrcDir, state.IsRecursive, &srcStructure)
 	if err != nil {
 		log.Fatalf("Error when creating the directory structure:\n%s\n", err)
 	}
