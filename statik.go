@@ -7,7 +7,6 @@ import (
 	"flag"
 	"html/template"
 	"io"
-	"io/fs"
 	"io/ioutil"
 	"log"
 	"net/url"
@@ -28,25 +27,29 @@ import (
 
 // Describes the state of every main variable of the program
 type ProgramState struct {
-	isRecursive bool
-	isEmpty     bool
-	enableSort  bool
-	convertLink bool
+	IsRecursive bool
+	IsEmpty     bool
+	EnableSort  bool
+	ConvertLink bool
 
-	styleTemplate  string
-	footerTemplate string
-	headerTemplate string
-	lineTemplate   string
+	// TODO: i have to convert these template string in other form, so that i can generalize the
+	// generation
+	StyleTemplate  string
+	FooterTemplate string
+	HeaderTemplate string
+	LineTemplate   string
 
-	srcDir  string
-	destDir string
+	SrcDir  string
+	DestDir string
 
-	includeRegEx    *regexp.Regexp
-	excludeRegEx    *regexp.Regexp
-	includeRegExStr string
-	excludeRegExStr string
+	IncludeRegEx    *regexp.Regexp
+	ExcludeRegEx    *regexp.Regexp
+	IncludeRegExStr string
+	ExcludeRegExStr string
 	URL             string
-	baseURL         *url.URL
+	BaseURL         *url.URL
+
+	Minifier *minify.M
 }
 
 type Dir struct {
@@ -72,11 +75,28 @@ type Line struct {
 	Size  string
 	Date  time.Time
 }
+
+// this interface will be used to handle the template programming
+// every gohtml template should implement this interface
+// TODO: this template interface could fit well with Registrary
+// design pattern: everytime you have to use a new template
+// you just register it (aka implement needed functions)!
+// PROBLEM: i don't have any idea how to make it, i don't even know
+// if it could be a good choice
+type Template interface {
+	Data(interface{}) interface{} // the interface that this template builds upon
+	Load(string)                  // load the teplate
+	Raw() string                  // the default filepath for the template
+	Tmpl() *template.Template     // just return the template pointer
+}
+
 type Directory struct {
 	Path        string      `json:"path"`
 	Name        string      `json:"name"`
 	Directories []Directory `json:"directories"`
 	Files       []File      `json:"files"`
+	Size        uint64      `json:"size"`
+	ModTime     time.Time   `json:"time"`
 }
 
 type FuzzyFile struct {
@@ -90,6 +110,10 @@ type File struct {
 	Size    uint64    `json:"size"`
 	ModTime time.Time `json:"time"`
 }
+
+const linkSuffix = ".link"
+const defaultSrc = "./"
+const defaultDest = "site"
 
 // WARNING: don't call this with directory FileInfo, not supported
 func getFile(file os.FileInfo, path string) File {
@@ -107,10 +131,12 @@ func getFile(file os.FileInfo, path string) File {
 // WARNING: don't call this with FileInfo that is not a directory, not supported
 func getDirectory(file os.FileInfo, path string) Directory {
 	return Directory{
-		path,
-		file.Name(),
-		[]Directory{},
-		[]File{},
+		Path:        path,
+		Name:        file.Name(),
+		Directories: []Directory{},
+		Files:       []File{},
+		Size:        uint64(file.Size()),
+		ModTime:     file.ModTime(),
 	}
 }
 
@@ -145,12 +171,6 @@ func GetDirectoryStructure(path string, recursive bool, directory *Directory) er
 		return err
 	}
 
-	// fill unitialized directory value (usually in first call)
-	if directory.Name == "" {
-		file, _ := os.Stat(path)
-		*directory = getDirectory(file, path)
-	}
-
 	filesInDir, err := ioutil.ReadDir(path)
 	if err != nil {
 		return err
@@ -177,22 +197,6 @@ func GetDirectoryStructure(path string, recursive bool, directory *Directory) er
 	return nil
 }
 
-// used to handle the template programming
-// every gohtml template should implement this interface
-// TODO: this template interface could fit well with Registrary
-// design pattern: everytime you have to use a new template
-// you just register it!
-type Template interface {
-	Data(interface{}) interface{} // the interface that this template builds upon
-	Load(string)                  // load the teplate
-	Raw() string                  // the default filepath for the template
-	Tmpl() *template.Template     // return the actual template
-}
-
-const linkSuffix = ".link"
-const defaultSrc = "./"
-const defaultDest = "site"
-
 var (
 	//go:embed "style.css"
 	style string
@@ -206,12 +210,12 @@ var (
 	header, footer, line *template.Template
 )
 
-// joins the baseUrl path with the given relative path and returns the url as a string
+// joins the BaseUrl path with the given relative path and returns the url as a string
 func withBaseURL(state *ProgramState, rel string) string {
-	cpy := state.baseURL.Path
-	state.baseURL.Path = path.Join(state.baseURL.Path, rel)
-	res := state.baseURL.String()
-	state.baseURL.Path = cpy
+	cpy := state.BaseURL.Path
+	state.BaseURL.Path = path.Join(state.BaseURL.Path, rel)
+	res := state.BaseURL.String()
+	state.BaseURL.Path = cpy
 	return res
 }
 
@@ -224,7 +228,7 @@ func gen(tmpl *template.Template, data interface{}, out io.Writer) {
 func copy(src, dest string) {
 	input, err := ioutil.ReadFile(src)
 	if err != nil {
-		log.Fatalf("Could not open srcDir file for copying: %s\n%s\n", src, err)
+		log.Fatalf("Could not open SrcDir file for copying: %s\n%s\n", src, err)
 	}
 	err = ioutil.WriteFile(dest, input, 0644)
 	if err != nil {
@@ -232,19 +236,33 @@ func copy(src, dest string) {
 	}
 }
 
-func filter(state *ProgramState, entries []fs.FileInfo) []fs.FileInfo {
-	filtered := []fs.FileInfo{}
+// NOTA: avevo bisogno di una funzione che filtri sia Directory che Files
+// Non sono riuscito in breve a creare tale cosa: (dovrebbe avere in input un interfaccia
+// che generalizzi il Name per directory e Files, e avere una funzione in input che dica come
+// filtrare)
+func filterDirs(state *ProgramState, entries []Directory) []Directory {
+	filtered := []Directory{}
 	for _, entry := range entries {
-		if entry.IsDir() && !state.excludeRegEx.MatchString(entry.Name()) ||
-			(!entry.IsDir() && state.includeRegEx.MatchString(entry.Name()) &&
-				!state.excludeRegEx.MatchString(entry.Name())) {
+		if !state.ExcludeRegEx.MatchString(entry.Name) {
 			filtered = append(filtered, entry)
 		}
 	}
 	return filtered
 }
 
-// SECTION CLARITY: remove this later, just tmp for clarity
+// VEDI NOTA filterDirs
+func filterFiles(state *ProgramState, entries []File) []File {
+	filtered := []File{}
+	for _, entry := range entries {
+		if state.IncludeRegEx.MatchString(entry.Name) && !state.ExcludeRegEx.MatchString(entry.Name) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+// FIXME: i have to sort both Directories and Files, need a way to make
+// them both at once
 // sort by isDirectory and alphabetical naming
 func sortAlphabetically(files []os.FileInfo) {
 	sort.Slice(files, func(i, j int) bool {
@@ -256,30 +274,133 @@ func sortAlphabetically(files []os.FileInfo) {
 	})
 }
 
-func generate(state *ProgramState, m *minify.M, dirName string, parts []string) bool {
-	filesInDir, err := ioutil.ReadDir(dirName)
-	if err != nil {
-		log.Fatalf("Could not read input directory: %s\n%s\n", dirName, err)
+// REGION GENERATE
+// TODO: these functions should be later generalized with interface and so on...
+// the function parameters are temporary, i have to find a way to reduce it...
+
+// Generate the header and the double dots back anchor when appropriate
+func generateHeader(state *ProgramState, parts []string, outBuff *bytes.Buffer) {
+	rel := path.Join(parts...)
+	p, url := []Dir{}, ""
+	for _, part := range parts {
+		url = path.Join(url, part)
+		p = append(p, Dir{Name: part, URL: withBaseURL(state, url)})
+	}
+	gen(header, Header{
+		Root: Dir{
+			Name: strings.TrimPrefix(strings.TrimSuffix(state.BaseURL.Path, "/"), "/"),
+			URL:  state.BaseURL.String(),
+		},
+		Parts:      p,
+		FullPath:   path.Join(state.BaseURL.Path+rel) + "/",
+		Stylesheet: template.CSS(style),
+	}, outBuff)
+}
+
+// populate the back line
+func generateBackLine(state *ProgramState, parts []string, outBuff *bytes.Buffer) {
+	rel := path.Join(parts...)
+	if len(parts) != 0 {
+		gen(line, Line{
+			IsDir: true,
+			Name:  "..",
+			URL:   withBaseURL(state, path.Join(rel, "..")),
+			Size:  humanize.Bytes(0),
+		}, outBuff)
+	}
+}
+
+func generateDirectories(dirs []Directory, state *ProgramState, parts []string, outBuff *bytes.Buffer) {
+	rel := path.Join(parts...)
+	dirName := path.Join(state.SrcDir, rel)
+	outDir := path.Join(state.DestDir, rel)
+	for _, dirEntry := range dirs {
+		dirPath := path.Join(dirName, dirEntry.Name)
+		// Avoid recursive infinite loop
+		if dirPath == outDir {
+			continue
+		}
+
+		data := Line{
+			IsDir: true,
+			Name:  dirEntry.Name,
+			URL:   withBaseURL(state, path.Join(rel, dirEntry.Name)),
+			Size:  humanize.Bytes(uint64(dirEntry.Size)),
+			Date:  dirEntry.ModTime,
+		}
+
+		// FIX: fix empty flag here, i shouldnt generate if dir is empty!
+		writeHTML(state, &dirEntry, append(parts, dirEntry.Name))
+		gen(line, data, outBuff)
+	}
+}
+
+func generateFiles(files []File, state *ProgramState, parts []string, outBuff *bytes.Buffer) {
+	rel := path.Join(parts...)
+	dirName := path.Join(state.SrcDir, rel)
+	outDir := path.Join(state.DestDir, rel)
+	for _, fileEntry := range files {
+
+		filePath := path.Join(dirName, fileEntry.Name)
+		data := Line{
+			IsDir: false,
+			Name:  fileEntry.Name,
+			URL:   withBaseURL(state, path.Join(rel, fileEntry.Name)),
+			Size:  humanize.Bytes(uint64(fileEntry.Size)),
+			Date:  fileEntry.ModTime,
+		}
+		if strings.HasSuffix(filePath, linkSuffix) {
+			data.Name = data.Name[:len(data.Name)-len(linkSuffix)] // get name without extension
+			data.Size = humanize.Bytes(0)
+
+			raw, err := ioutil.ReadFile(filePath)
+			if err != nil {
+				log.Fatalf("Could not read link file: %s\n%s\n", filePath, err)
+			}
+			rawStr := string(raw)
+			u, err := url.Parse(strings.TrimSpace(rawStr))
+			if err != nil {
+				log.Fatalf("Could not parse URL in file: %s\nThe value is: %s\n%s\n", filePath, raw, err)
+			}
+
+			data.URL = u.String()
+			gen(line, data, outBuff)
+			continue
+		}
+		gen(line, data, outBuff)
+		// Copy all files over to the web root
+		copy(filePath, path.Join(outDir, fileEntry.Name))
+	}
+}
+
+// END REGION GENERATE
+
+func writeHTML(state *ProgramState, directory *Directory, parts []string) {
+	directory.Files = filterFiles(state, directory.Files)
+	directory.Directories = filterDirs(state, directory.Directories)
+
+	rel := path.Join(parts...)
+	srcDirName := path.Join(state.SrcDir, rel)
+	outDir := path.Join(state.DestDir, rel)
+	log.Printf("Copying from %s\n", srcDirName)
+	log.Printf("To directory %s\n", outDir)
+	// FIXME
+	if len(directory.Directories)+len(directory.Files) == 0 {
+		return // state.IsEmpty
 	}
 
-	filteredFiles := filter(state, filesInDir)
-	if len(filteredFiles) == 0 {
-		return state.isEmpty
-	}
-
-	if state.enableSort {
-		sortAlphabetically(filteredFiles)
+	if state.EnableSort {
+		// TODO: fix these types!!!! i cant run sort on directory and files!
+		// sortAlphabetically(directory.Files)
 	}
 
 	// CHECK IF OUTPUT DIRECTORY HAS GOOD PERMS
-	rel := path.Join(parts...)
-	outDir := path.Join(state.destDir, rel)
-	err = os.Mkdir(outDir, os.ModePerm)
+	err := os.Mkdir(outDir, os.ModePerm)
 	if err != nil {
 		log.Fatalf("Could not create output *sub*directory: %s\n%s\n", outDir, err)
 	}
 
-	// LOAD HTML
+	// CREATE HTMLFILE
 	htmlPath := path.Join(outDir, "index.html")
 	html, err := os.OpenFile(htmlPath, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
@@ -287,96 +408,13 @@ func generate(state *ProgramState, m *minify.M, dirName string, parts []string) 
 	}
 
 	out := new(bytes.Buffer)
-	// TRACKER: variabili esterne usate:
-	// parts
-	// baseURL
-	// Generate the header and the double dots back anchor when appropriate
-	{
-		p, url := []Dir{}, ""
-		for _, part := range parts {
-			url = path.Join(url, part)
-			p = append(p, Dir{Name: part, URL: withBaseURL(state, url)})
-		}
-		gen(header, Header{
-			Root: Dir{
-				Name: strings.TrimPrefix(strings.TrimSuffix(state.baseURL.Path, "/"), "/"),
-				URL:  state.baseURL.String(),
-			},
-			Parts:      p,
-			FullPath:   path.Join(state.baseURL.Path+rel) + "/",
-			Stylesheet: template.CSS(style),
-		}, out)
-	}
-
-	// TRACKER: variabili esterne usate:
-	// rel
-	// Populate the back line
-	{
-		if len(parts) != 0 {
-			gen(line, Line{
-				IsDir: true,
-				Name:  "..",
-				URL:   withBaseURL(state, path.Join(rel, "..")),
-				Size:  humanize.Bytes(0),
-			}, out)
-		}
-	}
-
-	// TRACKER: variabili esterne usate:
-	// filteredFiles
-	// rel
-	// dirName
-	// outDir
-	// linkSuffix
-	// line
-	// state ProgramState
-	for _, entry := range filteredFiles {
-		pth := path.Join(dirName, entry.Name())
-		// Avoid recursive infinite loop
-		if pth == outDir {
-			continue
-		}
-
-		data := Line{
-			IsDir: entry.IsDir(),
-			Name:  entry.Name(),
-			URL:   withBaseURL(state, path.Join(rel, entry.Name())),
-			Size:  humanize.Bytes(uint64(entry.Size())),
-			Date:  entry.ModTime(),
-		}
-
-		if strings.HasSuffix(pth, linkSuffix) {
-			data.Name = data.Name[:len(data.Name)-len(linkSuffix)] // get name without extension
-			data.Size = humanize.Bytes(0)
-
-			raw, err := ioutil.ReadFile(pth)
-			if err != nil {
-				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
-			}
-			rawStr := string(raw)
-			u, err := url.Parse(strings.TrimSpace(rawStr))
-			if err != nil {
-				log.Fatalf("Could not parse URL in file: %s\nThe value is: %s\n%s\n", pth, raw, err)
-			}
-
-			data.URL = u.String()
-			gen(line, data, out)
-			continue
-		}
-
-		// TODO: simplify this logic
-		// Only list directories when recursing and only those which are not empty
-		if !entry.IsDir() || state.isRecursive && generate(state, m, pth, append(parts, entry.Name())) {
-			gen(line, data, out)
-		}
-
-		// Copy all files over to the web root
-		if !entry.IsDir() {
-			copy(pth, path.Join(outDir, entry.Name()))
-		}
-	}
+	generateHeader(state, parts, out)
+	generateBackLine(state, parts, out)
+	generateDirectories(directory.Directories, state, parts, out)
+	generateFiles(directory.Files, state, parts, out)
 	gen(footer, Footer{Date: time.Now()}, out)
-	err = m.Minify("text/html", html, out)
+
+	err = state.Minifier.Minify("text/html", html, out)
 	if err != nil {
 		log.Fatalf("Could not write to index.html: %s\n%s\n", htmlPath, err)
 	}
@@ -384,9 +422,7 @@ func generate(state *ProgramState, m *minify.M, dirName string, parts []string) 
 	if err != nil {
 		log.Fatalf("Could not write to close index.html: %s\n%s\n", htmlPath, err)
 	}
-	log.Printf("Generated data for directory: %s\n", dirName)
-
-	return !state.isEmpty
+	log.Printf("Generated data for directory: %s\n", srcDirName)
 }
 
 func loadTemplate(name string, path string, def *string, dest **template.Template) {
@@ -409,18 +445,18 @@ func loadTemplate(name string, path string, def *string, dest **template.Templat
 
 func logState(state *ProgramState) {
 	log.Println("Running with parameters:")
-	log.Println("\tInclude:\t", state.includeRegExStr)
-	log.Println("\tExclude:\t", state.excludeRegExStr)
-	log.Println("\tRecursive:\t", state.isRecursive)
-	log.Println("\tEmpty:\t\t", state.isEmpty)
-	log.Println("\tConvert links:\t", state.convertLink)
-	log.Println("\tSource:\t\t", state.srcDir)
-	log.Println("\tDestination:\t", state.destDir)
+	log.Println("\tInclude:\t", state.IncludeRegExStr)
+	log.Println("\tExclude:\t", state.ExcludeRegExStr)
+	log.Println("\tRecursive:\t", state.IsRecursive)
+	log.Println("\tEmpty:\t\t", state.IsEmpty)
+	log.Println("\tConvert links:\t", state.ConvertLink)
+	log.Println("\tSource:\t\t", state.SrcDir)
+	log.Println("\tDestination:\t", state.DestDir)
 	log.Println("\tBase URL:\t", state.URL)
-	log.Println("\tStyle:\t\t", state.styleTemplate)
-	log.Println("\tFooter:\t\t", state.footerTemplate)
-	log.Println("\tHeader:\t\t", state.headerTemplate)
-	log.Println("\tline:\t\t", state.lineTemplate)
+	log.Println("\tStyle:\t\t", state.StyleTemplate)
+	log.Println("\tFooter:\t\t", state.FooterTemplate)
+	log.Println("\tHeader:\t\t", state.HeaderTemplate)
+	log.Println("\tline:\t\t", state.LineTemplate)
 }
 
 func getAbsolutePath(filePath string) string {
@@ -449,19 +485,19 @@ func clearDirectory(filePath string) {
 // handles every input parameter of the Program, returns it in ProgramState.
 // if something its wrong, the whole program just panick-exits
 func initProgram(state *ProgramState) {
-	state.includeRegExStr = *flag.String("i", ".*", "A regex pattern to include files into the listing")
-	state.excludeRegExStr = *flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
-	state.isRecursive = *flag.Bool("r", true, "Recursively scan the file tree")
-	state.isEmpty = *flag.Bool("empty", false, "Whether to list empty directories")
-	state.enableSort = *flag.Bool("sort", true, "Sort files A-z and by type")
+	state.IncludeRegExStr = *flag.String("i", ".*", "A regex pattern to include files into the listing")
+	state.ExcludeRegExStr = *flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
+	state.IsRecursive = *flag.Bool("r", true, "Recursively scan the file tree")
+	state.IsEmpty = *flag.Bool("empty", false, "Whether to list empty directories")
+	state.EnableSort = *flag.Bool("sort", true, "Sort files A-z and by type")
 	state.URL = *flag.String("b", "http://localhost", "The base URL")
-	state.convertLink = *flag.Bool("l", false, "Convert .link files to anchor tags")
-	state.styleTemplate = *flag.String("style", "", "Use a custom stylesheet file")
-	state.footerTemplate = *flag.String("footer", "", "Use a custom footer template")
-	state.headerTemplate = *flag.String("header", "", "Use a custom header template")
-	state.lineTemplate = *flag.String("line", "", "Use a custom line template")
-	state.srcDir = defaultSrc
-	state.destDir = defaultDest
+	state.ConvertLink = *flag.Bool("l", false, "Convert .link files to anchor tags")
+	state.StyleTemplate = *flag.String("style", "", "Use a custom stylesheet file")
+	state.FooterTemplate = *flag.String("footer", "", "Use a custom footer template")
+	state.HeaderTemplate = *flag.String("header", "", "Use a custom header template")
+	state.LineTemplate = *flag.String("line", "", "Use a custom line template")
+	state.SrcDir = defaultSrc
+	state.DestDir = defaultDest
 	flag.Parse()
 
 	args := flag.Args()
@@ -469,62 +505,81 @@ func initProgram(state *ProgramState) {
 		log.Fatal("Invalid number of arguments, expected two at max (source and dest)")
 	}
 	if len(args) == 1 {
-		state.destDir = args[0]
+		state.DestDir = args[0]
 	} else if len(args) == 2 {
-		state.srcDir = args[0]
-		state.destDir = args[1]
+		state.SrcDir = args[0]
+		state.DestDir = args[1]
 	}
 
 	// NOTA: in seguito queste funzioni di logging si possono mettere in if con una flag per verbose
 	logState(state)
-	state.srcDir = getAbsolutePath(state.srcDir)
-	state.destDir = getAbsolutePath(state.destDir)
-	clearDirectory(state.destDir)
+	state.SrcDir = getAbsolutePath(state.SrcDir)
+	state.DestDir = getAbsolutePath(state.DestDir)
 
 	var err error
-	state.includeRegEx, err = regexp.Compile(state.includeRegExStr)
+	state.IncludeRegEx, err = regexp.Compile(state.IncludeRegExStr)
 	if err != nil {
 		log.Fatal("Invalid regexp for include matching", err)
 	}
-	state.excludeRegEx, err = regexp.Compile(state.excludeRegExStr)
+	state.ExcludeRegEx, err = regexp.Compile(state.ExcludeRegExStr)
 	if err != nil {
 		log.Fatal("Invalid regexp for exclude matching", err)
 	}
 
-	state.baseURL, err = url.Parse(state.URL)
+	state.BaseURL, err = url.Parse(state.URL)
 	if err != nil {
 		log.Fatalf("Could not parse base URL: %s\n%s\n", state.URL, err)
 	}
 
+	state.Minifier = minify.New()
+	state.Minifier.AddFunc("text/css", css.Minify)
+	state.Minifier.AddFunc("text/html", html.Minify)
+	state.Minifier.AddFunc("application/javascript", js.Minify)
+
 	// TODO: use the registry design pattern to generalize the template loading, parsing and execution
 	// This section should not belong to initProgram because it doesnt modify things on ProgramState,
 	// just needs access
-	loadTemplate("header", state.headerTemplate, &rawHeader, &header)
-	loadTemplate("line", state.lineTemplate, &rawLine, &line)
-	loadTemplate("footer", state.footerTemplate, &rawFooter, &footer)
+	loadTemplate("header", state.HeaderTemplate, &rawHeader, &header)
+	loadTemplate("line", state.LineTemplate, &rawLine, &line)
+	loadTemplate("footer", state.FooterTemplate, &rawFooter, &footer)
 
-	if state.styleTemplate != "" {
+	if state.StyleTemplate != "" {
 		var content []byte
-		if content, err = ioutil.ReadFile(state.styleTemplate); err != nil {
-			log.Fatalf("Could not read stylesheet file %s:\n%s\n", state.styleTemplate, err)
+		if content, err = ioutil.ReadFile(state.StyleTemplate); err != nil {
+			log.Fatalf("Could not read stylesheet file %s:\n%s\n", state.StyleTemplate, err)
 		}
 		style = string(content)
 	}
+}
+
+func prepareDirectories(source, dest string) {
+	// TODO: add fix for the case where source = "../../" as discussed
+
+	// check inputDir is readable
+	var err error
+	_, err = os.OpenFile(source, os.O_RDONLY, 0666)
+	if err != nil && os.IsPermission(err) {
+		log.Fatalf("Could not read input directory: %s\n%s\n", source, err)
+	}
+
+	// check if outputDir is writable
+	_, err = os.OpenFile(dest, os.O_WRONLY, 0666)
+	if err != nil && os.IsPermission(err) {
+		log.Fatalf("Could not write in output directory: %s\n%s\n", dest, err)
+	}
+
+	clearDirectory(dest)
 }
 
 func main() {
 	var state ProgramState
 	var srcStructure Directory
 	initProgram(&state)
-
-	err := GetDirectoryStructure(state.srcDir, state.isRecursive, &srcStructure)
+	prepareDirectories(state.SrcDir, state.DestDir)
+	err := GetDirectoryStructure(state.SrcDir, state.IsRecursive, &srcStructure)
 	if err != nil {
 		log.Fatalf("Error when creating the directory structure:\n%s\n", err)
 	}
 
-	minifier := minify.New()
-	minifier.AddFunc("text/css", css.Minify)
-	minifier.AddFunc("text/html", html.Minify)
-	minifier.AddFunc("application/javascript", js.Minify)
-	generate(&state, minifier, state.srcDir, []string{})
+	writeHTML(&state, &srcStructure, []string{})
 }
