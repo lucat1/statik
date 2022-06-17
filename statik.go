@@ -31,20 +31,20 @@ import (
 // Describes the state of every main variable of the program
 var (
 	//go:embed "header.gohtml"
-	headerTemplate 		 string
+	headerTemplate string
 	//go:embed "line.gohtml"
-	lineTemplate 		 string
+	lineTemplate string
 	//go:embed "footer.gohtml"
-	footerTemplate		 string
+	footerTemplate string
 	//go:embed "style.css"
 	style                string
 	header, footer, line *template.Template
 	minifier             *minify.M
 
-	styleTemplatePath	string
-	headerTemplatePath	string
-	lineTemplatePath	string
-	footerTemplatePath	string
+	styleTemplatePath  string
+	headerTemplatePath string
+	lineTemplatePath   string
+	footerTemplatePath string
 
 	workDir string
 	srcDir  string
@@ -59,7 +59,7 @@ var (
 	includeRegExStr string
 	excludeRegExStr string
 	baseURL         *url.URL
-	rawURL			string
+	rawURL          string
 )
 
 const (
@@ -92,20 +92,6 @@ type Line struct {
 	Date  time.Time
 }
 
-// this interface will be used to handle the template programming
-// every gohtml template should implement this interface
-// TODO: this template interface could fit well with Registrary
-// design pattern: everytime you have to use a new template
-// you just register it (aka implement needed functions)!
-// PROBLEM: i don't have any idea how to make it, i don't even know
-// if it could be a good choice
-type Template interface {
-	Data(interface{}) interface{} // the interface that this template builds upon
-	Load(string)                  // load the teplate
-	Raw() string                  // the default filepath for the template
-	Tmpl() *template.Template     // just return the template pointer
-}
-
 type Named interface {
 	GetName() string
 }
@@ -113,7 +99,7 @@ type Named interface {
 type Directory struct {
 	Name        string      `json:"name"`
 	Path        string      `json:"path"`
-	SourcePath 	string  	`json:"-"`
+	SourcePath  string      `json:"-"`
 	Directories []Directory `json:"directories"`
 	Files       []File      `json:"files"`
 	Size        int64       `json:"size"`
@@ -135,6 +121,7 @@ type File struct {
 }
 
 func (d Directory) GetName() string { return d.Name }
+func (d Directory) isEmpty() bool   { return len(d.Directories) == 0 && len(d.Files) == 0 }
 func (f File) GetName() string      { return f.FuzzyFile.Name }
 
 // joins the baseURL with the given relative path in a new URL instance
@@ -165,11 +152,11 @@ func newFile(info os.FileInfo, dir string) (f File, err error) {
 
 	return File{
 		FuzzyFile: FuzzyFile{
-			Name: info.Name(),
-			Path: rel,
+			Name:       info.Name(),
+			Path:       rel,
 			SourcePath: dir,
-			URL:  url,
-			Mime: mime.String(),
+			URL:        url,
+			Mime:       mime.String(),
 		},
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
@@ -187,10 +174,6 @@ func isDir(path string) (err error) {
 	return nil
 }
 
-func (d Directory) isEmpty() bool {
-	return len(d.Directories) == 0 && len(d.Files) == 0
-}
-
 func sortAlpha[T Named](infos []T) {
 	sort.Slice(infos, func(i, j int) bool {
 		return infos[i].GetName() < infos[j].GetName()
@@ -199,11 +182,11 @@ func sortAlpha[T Named](infos []T) {
 
 func walk(base string) (dir Directory, err error) {
 	var (
-		infos		[]fs.FileInfo
-		sourceInfo 	fs.FileInfo
-		subdir		Directory
-		file	  	File
-		rel    		string
+		infos      []fs.FileInfo
+		sourceInfo fs.FileInfo
+		subdir     Directory
+		file       File
+		rel        string
 	)
 	if infos, err = ioutil.ReadDir(base); err != nil {
 		return dir, fmt.Errorf("Could not read directory %s:\n%s", base, err)
@@ -218,11 +201,11 @@ func walk(base string) (dir Directory, err error) {
 	}
 
 	dir = Directory{
-		Name:    	sourceInfo.Name(),
+		Name:       sourceInfo.Name(),
 		SourcePath: base,
-		Path:    	rel,
-		Size:    	sourceInfo.Size(),
-		ModTime: 	sourceInfo.ModTime(),
+		Path:       rel,
+		Size:       sourceInfo.Size(),
+		ModTime:    sourceInfo.ModTime(),
 	}
 
 	for _, info := range infos {
@@ -415,8 +398,8 @@ func readIfNotEmpty(path string, dest *string) (err error) {
 		if err != nil {
 			return fmt.Errorf("Could not read file: %s\n%s", path, err)
 		}
+		*dest = string(content)
 	}
-	*dest = string(content)
 	return nil
 }
 
@@ -427,28 +410,8 @@ func loadTemplate(name string, path string, buf *string) (tmpl *template.Templat
 	if tmpl, err = template.New(name).Parse(*buf); err != nil {
 		return
 	}
-	return 
+	return
 }
-
-// TODO: debug: remove me after fix!
-func loadTemplateOld(name string, path string, def *string, dest **template.Template) {
-	var (
-		content []byte
-		err     error
-	)
-	if path != "" {
-		content, err = ioutil.ReadFile(path)
-		if err != nil {
-			log.Fatalf("Could not read %s template file %s:\n%s\n", name, path, err)
-		}
-		*def = string(content)
-	}
-	*dest, err = template.New(name).Parse(*def)
-	if err != nil {
-		log.Fatalf("Could not parse %s template %s:\n%s\n", name, path, err)
-	}
-}
-
 
 func logState() {
 	log.Println("Running with parameters:")
@@ -499,7 +462,6 @@ func sanitizeDirectories() (err error) {
 }
 
 func main() {
-	// REGION INITGLOBALS
 	var err error
 	includeRegExStr = *flag.String("i", ".*", "A regex pattern to include files into the listing")
 	excludeRegExStr = *flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
@@ -556,11 +518,9 @@ func main() {
 	minifier.AddFunc("text/html", html.Minify)
 	minifier.AddFunc("application/javascript", js.Minify)
 
-	loadTemplateOld("header", headerTemplatePath, &headerTemplate, &header)
-
-	// if header, err = loadTemplate("header", headerTemplatePath, &headerTemplate); err != nil {
-	// 	log.Fatal("Could not parse header template", err)
-	// }
+	if header, err = loadTemplate("header", headerTemplatePath, &headerTemplate); err != nil {
+		log.Fatal("Could not parse header template", err)
+	}
 	if line, err = loadTemplate("line", lineTemplatePath, &lineTemplate); err != nil {
 		log.Fatal("Could not parse line template", err)
 	}
