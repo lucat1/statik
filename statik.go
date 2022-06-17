@@ -31,16 +31,20 @@ import (
 // Describes the state of every main variable of the program
 var (
 	//go:embed "header.gohtml"
-	headerTemplate string
+	headerTemplate 		 string
 	//go:embed "line.gohtml"
-	lineTemplate string
+	lineTemplate 		 string
 	//go:embed "footer.gohtml"
-	footerTemplate string
-
+	footerTemplate		 string
 	//go:embed "style.css"
 	style                string
 	header, footer, line *template.Template
 	minifier             *minify.M
+
+	styleTemplatePath	string
+	headerTemplatePath	string
+	lineTemplatePath	string
+	footerTemplatePath	string
 
 	workDir string
 	srcDir  string
@@ -55,6 +59,7 @@ var (
 	includeRegExStr string
 	excludeRegExStr string
 	baseURL         *url.URL
+	rawURL			string
 )
 
 const (
@@ -108,6 +113,7 @@ type Named interface {
 type Directory struct {
 	Name        string      `json:"name"`
 	Path        string      `json:"path"`
+	SourcePath 	string  	`json:"-"`
 	Directories []Directory `json:"directories"`
 	Files       []File      `json:"files"`
 	Size        int64       `json:"size"`
@@ -132,11 +138,8 @@ func (d Directory) GetName() string { return d.Name }
 func (f File) GetName() string      { return f.FuzzyFile.Name }
 
 // joins the baseURL with the given relative path in a new URL instance
-func withBaseURL(rel string) (url *url.URL, err error) {
-	url, err = url.Parse(baseURL.String())
-	if err != nil {
-		return
-	}
+func withBaseURL(rel string) (url *url.URL) {
+	url, _ = url.Parse(baseURL.String()) // its clear that there can't be error here :)
 	url.Path = path.Join(baseURL.Path, rel)
 	return
 }
@@ -155,9 +158,7 @@ func newFile(info os.FileInfo, dir string) (f File, err error) {
 	if rel, err = filepath.Rel(srcDir, abs); err != nil {
 		return
 	}
-	if url, err = withBaseURL(rel); err != nil {
-		return
-	}
+	url = withBaseURL(rel)
 	if mime, err = mimetype.DetectFile(abs); err != nil {
 		return
 	}
@@ -166,6 +167,7 @@ func newFile(info os.FileInfo, dir string) (f File, err error) {
 		FuzzyFile: FuzzyFile{
 			Name: info.Name(),
 			Path: rel,
+			SourcePath: dir,
 			URL:  url,
 			Mime: mime.String(),
 		},
@@ -197,35 +199,38 @@ func sortAlpha[T Named](infos []T) {
 
 func walk(base string) (dir Directory, err error) {
 	var (
-		infos  []fs.FileInfo
-		subdir Directory
-		file   File
-		rel    string
+		infos		[]fs.FileInfo
+		sourceInfo 	fs.FileInfo
+		subdir		Directory
+		file	  	File
+		rel    		string
 	)
 	if infos, err = ioutil.ReadDir(base); err != nil {
 		return dir, fmt.Errorf("Could not read directory %s:\n%s", base, err)
 	}
 
-	if infos[0], err = os.Stat(base); err != nil {
+	if sourceInfo, err = os.Stat(base); err != nil {
 		return dir, fmt.Errorf("Could not stat directory %s:\n%s", base, err)
 	}
+
 	if rel, err = filepath.Rel(srcDir, base); err != nil {
-		return
+		return dir, err
 	}
 
 	dir = Directory{
-		Name:    infos[0].Name(),
-		Path:    rel,
-		Size:    infos[0].Size(),
-		ModTime: infos[0].ModTime(),
+		Name:    	sourceInfo.Name(),
+		SourcePath: base,
+		Path:    	rel,
+		Size:    	sourceInfo.Size(),
+		ModTime: 	sourceInfo.ModTime(),
 	}
 
 	for _, info := range infos {
 		if info.IsDir() && isRecursive && includeDir(info) {
 			if subdir, err = walk(path.Join(base, info.Name())); err != nil {
-				return
+				return dir, err
 			}
-			if !subdir.isEmpty() {
+			if !subdir.isEmpty() || isEmpty { // include emptydir if isEmptyflag is setted
 				dir.Directories = append(dir.Directories, subdir)
 			}
 		} else if !info.IsDir() && includeFile(info) {
@@ -275,15 +280,15 @@ func generateHeader(parts []string, outBuff *bytes.Buffer) {
 	p, url := []Dir{}, ""
 	for _, part := range parts {
 		url = path.Join(url, part)
-		p = append(p, Dir{Name: part, URL: withBaseURL(state, url)})
+		p = append(p, Dir{Name: part, URL: withBaseURL(url).Path})
 	}
 	gen(header, Header{
 		Root: Dir{
-			Name: strings.TrimPrefix(strings.TrimSuffix(state.BaseURL.Path, "/"), "/"),
-			URL:  state.BaseURL.String(),
+			Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
+			URL:  baseURL.String(),
 		},
 		Parts:      p,
-		FullPath:   path.Join(state.BaseURL.Path+rel) + "/",
+		FullPath:   path.Join(baseURL.Path+rel) + "/",
 		Stylesheet: template.CSS(style),
 	}, outBuff)
 }
@@ -295,16 +300,16 @@ func generateBackLine(parts []string, outBuff *bytes.Buffer) {
 		gen(line, Line{
 			IsDir: true,
 			Name:  "..",
-			URL:   withBaseURL(state, path.Join(rel, "..")),
+			URL:   withBaseURL(path.Join(rel, "..")).Path,
 			Size:  humanize.Bytes(0),
 		}, outBuff)
 	}
 }
 
-func generateDirectories(dirs []Directory, state *ProgramState, parts []string, outBuff *bytes.Buffer) {
+func generateDirectories(dirs []Directory, parts []string, outBuff *bytes.Buffer) {
 	rel := path.Join(parts...)
-	dirName := path.Join(state.SrcDir, rel)
-	outDir := path.Join(state.DestDir, rel)
+	dirName := path.Join(srcDir, rel)
+	outDir := path.Join(destDir, rel)
 	for _, dirEntry := range dirs {
 		dirPath := path.Join(dirName, dirEntry.Name)
 		// Avoid recursive infinite loop
@@ -315,28 +320,29 @@ func generateDirectories(dirs []Directory, state *ProgramState, parts []string, 
 		data := Line{
 			IsDir: true,
 			Name:  dirEntry.Name,
-			URL:   withBaseURL(state, path.Join(rel, dirEntry.Name)),
+			URL:   withBaseURL(path.Join(rel, dirEntry.Name)).Path,
 			Size:  humanize.Bytes(uint64(dirEntry.Size)),
 			Date:  dirEntry.ModTime,
 		}
 
-		// FIX: fix empty flag here, i shouldnt generate if dir is empty!
-		writeHTML(state, &dirEntry, append(parts, dirEntry.Name))
+		writeHTML(&dirEntry, append(parts, dirEntry.Name))
 		gen(line, data, outBuff)
 	}
 }
 
 func generateFiles(files []File, parts []string, outBuff *bytes.Buffer) {
 	rel := path.Join(parts...)
-	dirName := path.Join(state.SrcDir, rel)
-	outDir := path.Join(state.DestDir, rel)
+	dirName := path.Join(srcDir, rel)
+	outDir := path.Join(destDir, rel)
 	for _, fileEntry := range files {
 
+		// DEBUG REMOVE ME AFTER FIX
+		fmt.Printf("file probably generated: %s \n", fileEntry.Name)
 		filePath := path.Join(dirName, fileEntry.Name)
 		data := Line{
 			IsDir: false,
 			Name:  fileEntry.Name,
-			URL:   withBaseURL(state, path.Join(rel, fileEntry.Name)),
+			URL:   withBaseURL(path.Join(rel, fileEntry.Name)).Path,
 			Size:  humanize.Bytes(uint64(fileEntry.Size)),
 			Date:  fileEntry.ModTime,
 		}
@@ -356,11 +362,11 @@ func generateFiles(files []File, parts []string, outBuff *bytes.Buffer) {
 
 			data.URL = u.String()
 			gen(line, data, outBuff)
-			continue
+		} else {
+			// Copy all files over to the web root
+			copy(filePath, path.Join(outDir, fileEntry.Name))
 		}
 		gen(line, data, outBuff)
-		// Copy all files over to the web root
-		copy(filePath, path.Join(outDir, fileEntry.Name))
 	}
 }
 
@@ -368,19 +374,8 @@ func generateFiles(files []File, parts []string, outBuff *bytes.Buffer) {
 
 func writeHTML(directory *Directory, parts []string) {
 	rel := path.Join(parts...)
-	srcDirName := path.Join(state.SrcDir, rel)
-	outDir := path.Join(state.DestDir, rel)
-	log.Printf("Copying from %s\n", srcDirName)
-	log.Printf("To directory %s\n", outDir)
-	// FIXME
-	if len(directory.Directories)+len(directory.Files) == 0 {
-		return // state.IsEmpty
-	}
-
-	if state.EnableSort {
-		// TODO: fix these types!!!! i cant run sort on directory and files!
-		// sortAlphabetically(directory.Files)
-	}
+	srcDirName := path.Join(srcDir, rel)
+	outDir := path.Join(destDir, rel)
 
 	// CHECK IF OUTPUT DIRECTORY HAS GOOD PERMS
 	err := os.Mkdir(outDir, os.ModePerm)
@@ -396,13 +391,13 @@ func writeHTML(directory *Directory, parts []string) {
 	}
 
 	out := new(bytes.Buffer)
-	generateHeader(state, parts, out)
-	generateBackLine(state, parts, out)
-	generateDirectories(directory.Directories, state, parts, out)
-	generateFiles(directory.Files, state, parts, out)
+	generateHeader(parts, out)
+	generateBackLine(parts, out)
+	generateDirectories(directory.Directories, parts, out)
+	generateFiles(directory.Files, parts, out)
 	gen(footer, Footer{Date: time.Now()}, out)
 
-	err = state.Minifier.Minify("text/html", html, out)
+	err = minifier.Minify("text/html", html, out)
 	if err != nil {
 		log.Fatalf("Could not write to index.html: %s\n%s\n", htmlPath, err)
 	}
@@ -432,8 +427,28 @@ func loadTemplate(name string, path string, buf *string) (tmpl *template.Templat
 	if tmpl, err = template.New(name).Parse(*buf); err != nil {
 		return
 	}
-	return
+	return 
 }
+
+// TODO: debug: remove me after fix!
+func loadTemplateOld(name string, path string, def *string, dest **template.Template) {
+	var (
+		content []byte
+		err     error
+	)
+	if path != "" {
+		content, err = ioutil.ReadFile(path)
+		if err != nil {
+			log.Fatalf("Could not read %s template file %s:\n%s\n", name, path, err)
+		}
+		*def = string(content)
+	}
+	*dest, err = template.New(name).Parse(*def)
+	if err != nil {
+		log.Fatalf("Could not parse %s template %s:\n%s\n", name, path, err)
+	}
+}
+
 
 func logState() {
 	log.Println("Running with parameters:")
@@ -444,14 +459,14 @@ func logState() {
 	log.Println("\tConvert links:\t", convertLink)
 	log.Println("\tSource:\t\t", srcDir)
 	log.Println("\tDestination:\t", destDir)
-	log.Println("\tBase URL:\t", baseURL)
-	log.Println("\tStyle:\t\t", styleTemplate)
-	log.Println("\tFooter:\t\t", footerTemplate)
-	log.Println("\tHeader:\t\t", headerTemplate)
-	log.Println("\tline:\t\t", lineTemplate)
+	log.Println("\tBase URL:\t", rawURL)
+	log.Println("\tStyle:\t\t", styleTemplatePath)
+	log.Println("\tFooter:\t\t", footerTemplatePath)
+	log.Println("\tHeader:\t\t", headerTemplatePath)
+	log.Println("\tline:\t\t", lineTemplatePath)
 }
 
-func abs(rel string) string {
+func getAbsPath(rel string) string {
 	if filepath.IsAbs(rel) {
 		return rel
 	}
@@ -484,18 +499,19 @@ func sanitizeDirectories() (err error) {
 }
 
 func main() {
+	// REGION INITGLOBALS
 	var err error
 	includeRegExStr = *flag.String("i", ".*", "A regex pattern to include files into the listing")
 	excludeRegExStr = *flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
 	isRecursive = *flag.Bool("r", true, "Recursively scan the file tree")
 	isEmpty = *flag.Bool("empty", false, "Whether to list empty directories")
 	enableSort = *flag.Bool("sort", true, "Sort files A-z and by type")
-	rawURL := *flag.String("b", "http://localhost", "The base URL")
+	rawURL = *flag.String("b", "http://localhost", "The base URL")
 	convertLink = *flag.Bool("l", false, "Convert .link files to anchor tags")
-	styleTemplatePath := *flag.String("style", "", "Use a custom stylesheet file")
-	headerTemplatePath := *flag.String("header", "", "Use a custom header template")
-	lineTemplatePath := *flag.String("line", "", "Use a custom line template")
-	footerTemplatePath := *flag.String("footer", "", "Use a custom footer template")
+	styleTemplatePath = *flag.String("style", "", "Use a custom stylesheet file")
+	headerTemplatePath = *flag.String("header", "", "Use a custom header template")
+	lineTemplatePath = *flag.String("line", "", "Use a custom line template")
+	footerTemplatePath = *flag.String("footer", "", "Use a custom footer template")
 	srcDir = defaultSrc
 	destDir = defaultDest
 	flag.Parse()
@@ -518,8 +534,8 @@ func main() {
 
 	// NOTA: in seguito queste funzioni di logging si possono mettere in if con una flag per verbose
 	logState()
-	srcDir = abs(srcDir)
-	destDir = abs(destDir)
+	srcDir = getAbsPath(srcDir)
+	destDir = getAbsPath(destDir)
 	if err = sanitizeDirectories(); err != nil {
 		log.Fatal("Error while checking src and dest paths", err)
 	}
@@ -540,9 +556,11 @@ func main() {
 	minifier.AddFunc("text/html", html.Minify)
 	minifier.AddFunc("application/javascript", js.Minify)
 
-	if header, err = loadTemplate("header", headerTemplatePath, &headerTemplate); err != nil {
-		log.Fatal("Could not parse header template", err)
-	}
+	loadTemplateOld("header", headerTemplatePath, &headerTemplate, &header)
+
+	// if header, err = loadTemplate("header", headerTemplatePath, &headerTemplate); err != nil {
+	// 	log.Fatal("Could not parse header template", err)
+	// }
 	if line, err = loadTemplate("line", lineTemplatePath, &lineTemplate); err != nil {
 		log.Fatal("Could not parse line template", err)
 	}
@@ -552,11 +570,13 @@ func main() {
 	if err = readIfNotEmpty(styleTemplatePath, &style); err != nil {
 		log.Fatal("Could not read stylesheet file", err)
 	}
+	// ENDREGION INITGLOBALS
 
-	dir, err := walk(srcDir, isRecursive)
+	dir, err := walk(srcDir)
 	if err != nil {
 		log.Fatalf("Error when creating the directory structure:\n%s\n", err)
 	}
-
-	writeHTML(dir, []string{})
+	// DEBUG REMOVE ME AFTER FIX
+	fmt.Printf("%+v\n", dir)
+	writeHTML(&dir, []string{})
 }
