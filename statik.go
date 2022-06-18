@@ -73,9 +73,8 @@ type Dir struct {
 }
 
 type Header struct {
-	Root       Dir
-	Parts      []Dir
-	FullPath   string
+	Directory  Directory
+	Parts      []Directory
 	Stylesheet template.CSS
 }
 
@@ -216,35 +215,50 @@ func isDir(path string) (err error) {
 // The input path dir is assumed to be already absolute
 func newFile(info os.FileInfo, dir string) (fz FuzzyFile, f File, err error) {
 	if info.IsDir() {
-		return fz, File{}, errors.New("newFile has been called with a os.FileInfo of type Directory")
+		return fz, f, errors.New("newFile has been called with a os.FileInfo of type Directory")
 	}
 
 	var (
-		rel  string
-		mime *mimetype.MIME
+		rel, name, size string
+		raw             []byte
+		url             *url.URL
+		mime            *mimetype.MIME
 	)
 	abs := path.Join(dir, info.Name())
 	if rel, err = filepath.Rel(srcDir, abs); err != nil {
 		return
 	}
+
+	url = withBaseURL(rel)
+	size = humanize.Bytes(uint64(info.Size()))
+	name = info.Name()
 	if strings.HasSuffix(info.Name(), linkSuffix) {
+		if raw, err = ioutil.ReadFile(abs); err != nil {
+			return fz, f, fmt.Errorf("Could not read link file: %s\n%s\n", abs, err)
+		}
+		if url, err = url.Parse(strings.TrimSpace(string(raw))); err != nil {
+			return fz, f, fmt.Errorf("Could not parse URL in file %s\n: %s\n%s\n", abs, raw, err)
+		}
+
+		size = humanize.Bytes(0)
+		name = name[:len(name)-len(linkSuffix)]
 		mime = linkMIME
 	} else if mime, err = mimetype.DetectFile(abs); err != nil {
 		return
 	}
 
 	fz = FuzzyFile{
-		Name:    info.Name(),
+		Name:    name,
 		Path:    rel,
 		SrcPath: abs,
 		DstPath: path.Join(dstDir, rel),
-		URL:     withBaseURL(rel),
+		URL:     url,
 		MIME:    mime,
 		Mode:    info.Mode(),
 	}
 	return fz, File{
 		FuzzyFile: fz,
-		Size:      humanize.Bytes(uint64(info.Size())),
+		Size:      size,
 		ModTime:   info.ModTime(),
 	}, nil
 }
@@ -348,19 +362,15 @@ func copy(f FuzzyFile) (err error) {
 
 // Generate the header and the double dots back anchor when appropriate
 func generateHeader(dir Directory, outBuff io.Writer) {
-	parts := filepath.SplitList(dir.Path)
-	p, url := []Dir{}, ""
-	for _, part := range parts {
-		url = path.Join(url, part)
-		p = append(p, Dir{Name: part, URL: withBaseURL(url).Path})
+	relUrl := ""
+	parts := []Directory{}
+	for _, part := range filepath.SplitList(dir.Path) {
+		relUrl = path.Join(relUrl, part)
+		parts = append(parts, Directory{Name: part, URL: withBaseURL(relUrl)})
 	}
 	gen(header, Header{
-		Root: Dir{
-			Name: dir.Name,
-			URL:  baseURL.String(),
-		},
-		Parts:      p,
-		FullPath:   dir.URL.Path + "/",
+		Directory:  dir,
+		Parts:      parts,
 		Stylesheet: template.CSS(style),
 	}, outBuff)
 }
@@ -402,23 +412,6 @@ func generateFiles(files []File, outBuff *bytes.Buffer) {
 			URL:   file.URL.Path,
 			Size:  file.Size,
 			Date:  file.ModTime,
-		}
-		if file.MIME == linkMIME {
-			data.Name = data.Name[:len(data.Name)-len(linkSuffix)] // get name without extension
-			data.Size = humanize.Bytes(0)
-
-			raw, err := ioutil.ReadFile(file.SrcPath)
-			if err != nil {
-				log.Fatalf("Could not read link file: %s\n%s\n", file.SrcPath, err)
-			}
-			rawStr := string(raw)
-			u, err := url.Parse(strings.TrimSpace(rawStr))
-			if err != nil {
-				log.Fatalf("Could not parse URL in file: %s\nThe value is: %s\n%s\n", file.SrcPath, raw, err)
-			}
-
-			data.URL = u.String()
-			gen(line, data, outBuff)
 		}
 		gen(line, data, outBuff)
 	}
