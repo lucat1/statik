@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
 	"io/ioutil"
 	"log"
@@ -29,25 +28,20 @@ import (
 	"github.com/tdewolff/minify/v2/js"
 )
 
-// Describes the state of every main variable of the program
 var (
-	//go:embed "header.gohtml"
-	headerTemplate string
-	//go:embed "line.gohtml"
-	lineTemplate string
-	//go:embed "footer.gohtml"
-	footerTemplate string
+	//go:embed "page.gohtml"
+	pageTemplate string
 	//go:embed "style.css"
-	style                string
-	header, footer, line *template.Template
-	minifier             *minify.M
+	style    string
+	page     *template.Template
+	minifier *minify.M
 
 	workDir string
 	srcDir  string
 	dstDir  string
 
 	isRecursive  bool
-	isEmpty      bool
+	includeEmpty bool
 	enableSort   bool
 	convertLink  bool
 	includeRegEx *regexp.Regexp
@@ -67,31 +61,11 @@ const (
 	metadataFileName = "statik.json"
 )
 
-type Dir struct {
-	Name string
-	URL  string
-}
-
-type Header struct {
-	Directory  Directory
+type HTMLPayload struct {
 	Parts      []Directory
+	Root       Directory
 	Stylesheet template.CSS
-}
-
-type Footer struct {
-	Date time.Time
-}
-
-type Line struct {
-	IsDir bool
-	Name  string
-	URL   string
-	Size  string
-	Date  time.Time
-}
-
-type Named interface {
-	GetName() string
+	Today      time.Time
 }
 
 type Directory struct {
@@ -160,9 +134,7 @@ func (f *File) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (d Directory) GetName() string { return d.Name }
-func (d Directory) isEmpty() bool   { return len(d.Directories) == 0 && len(d.Files) == 0 }
-func (f File) GetName() string      { return f.FuzzyFile.Name }
+func (d Directory) isEmpty() bool { return len(d.Directories) == 0 && len(d.Files) == 0 }
 
 // joins the baseURL with the given relative path in a new URL instance
 func withBaseURL(rel string) (url *url.URL) {
@@ -263,6 +235,13 @@ func newFile(info os.FileInfo, dir string) (fz FuzzyFile, f File, err error) {
 	}, nil
 }
 
+type Named interface {
+	GetName() string
+}
+
+func (d Directory) GetName() string { return d.Name }
+func (f File) GetName() string      { return f.FuzzyFile.Name }
+
 func sortByName[T Named](infos []T) {
 	sort.Slice(infos, func(i, j int) bool {
 		return infos[i].GetName() < infos[j].GetName()
@@ -320,7 +299,8 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 			if subdir, subfz, err = walk(path.Join(base, info.Name())); err != nil {
 				return
 			}
-			if !subdir.isEmpty() || isEmpty { // include emptydir if isEmptyflag is setted
+			if !subdir.isEmpty() || includeEmpty {
+				// include emptydir if isEmptyflag is setted
 				dir.Directories = append(dir.Directories, subdir)
 				fz = append(fz, subfz...)
 			}
@@ -339,12 +319,6 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 	return
 }
 
-func gen(tmpl *template.Template, data interface{}, out io.Writer) {
-	if err := tmpl.Execute(out, data); err != nil {
-		log.Fatalf("Could not generate template for the %s section:\n%s\n", tmpl.Name(), err)
-	}
-}
-
 func copy(f FuzzyFile) (err error) {
 	var input []byte
 	if input, err = ioutil.ReadFile(f.SrcPath); err != nil {
@@ -354,67 +328,6 @@ func copy(f FuzzyFile) (err error) {
 		return fmt.Errorf("Could not open %s for writing:\n%s", f.DstPath, err)
 	}
 	return nil
-}
-
-// REGION GENERATE
-// TODO: these functions should be later generalized with interface and so on...
-// the function parameters are temporary, i have to find a way to reduce it...
-
-// Generate the header and the double dots back anchor when appropriate
-func generateHeader(dir Directory, outBuff io.Writer) {
-	relUrl := ""
-	parts := []Directory{}
-	for _, part := range filepath.SplitList(dir.Path) {
-		relUrl = path.Join(relUrl, part)
-		parts = append(parts, Directory{Name: part, URL: withBaseURL(relUrl)})
-	}
-	gen(header, Header{
-		Directory:  dir,
-		Parts:      parts,
-		Stylesheet: template.CSS(style),
-	}, outBuff)
-}
-
-// populate the back line
-func generateBackLine(dir Directory, outBuff *bytes.Buffer) {
-	log.Println("PATHHHHH: ", dir.Path)
-	if dir.Path != "." {
-		gen(line, Line{
-			IsDir: true,
-			Name:  "..",
-			URL:   dir.URL.Path,
-			Size:  humanize.Bytes(0),
-		}, outBuff)
-	}
-}
-
-func generateDirectories(dirs []Directory, outBuff *bytes.Buffer) {
-	for _, dir := range dirs {
-		data := Line{
-			IsDir: true,
-			Name:  dir.Name,
-			URL:   dir.URL.Path,
-			Size:  dir.Size,
-			Date:  dir.ModTime,
-		}
-
-		writeHTML(dir)
-		gen(line, data, outBuff)
-	}
-}
-
-func generateFiles(files []File, outBuff *bytes.Buffer) {
-	for _, file := range files {
-		fmt.Printf("file probably generated: %s \n", file.Name)
-		data := Line{
-			IsDir: false,
-			Name:  file.Name,
-			URL:   file.URL.Path,
-			Size:  file.Size,
-			Date:  file.ModTime,
-		}
-		gen(line, data, outBuff)
-	}
 }
 
 func writeCopies(dir Directory, fz []FuzzyFile) (err error) {
@@ -469,30 +382,38 @@ func writeJSON(dir Directory, fz []FuzzyFile) (err error) {
 	return nil
 }
 
-func writeHTML(dir Directory) error {
-	htmlPath := path.Join(dir.DstPath, "index.html")
-	html, err := os.OpenFile(htmlPath, os.O_RDWR|os.O_CREATE, regularFile)
-	if err != nil {
-		log.Fatalf("Could not create output index.html: %s\n%s\n", htmlPath, err)
+// Populates a HTMLPayload structure to generate an html listing file,
+// propagating the generation recursively.
+func writeHTML(dir Directory) (err error) {
+	var (
+		index, relUrl string
+		html          *os.File
+	)
+
+	index = path.Join(dir.DstPath, "index.html")
+	if html, err = os.OpenFile(index, os.O_RDWR|os.O_CREATE, regularFile); err != nil {
+		return fmt.Errorf("Could not create output file %s:\n%s\n", index, err)
 	}
 	defer html.Close()
 
-	out := new(bytes.Buffer)
-	generateHeader(dir, out)
-	generateBackLine(dir, out)
-	generateDirectories(dir.Directories, out)
-	generateFiles(dir.Files, out)
-	gen(footer, Footer{Date: time.Now()}, out)
+	buf := new(bytes.Buffer)
+	payload := HTMLPayload{
+		Root:       dir,
+		Stylesheet: template.CSS(style),
+		Today:      time.Now(),
+	}
 
-	err = minifier.Minify("text/html", html, out)
-	if err != nil {
-		log.Fatalf("Could not write to index.html: %s\n%s\n", htmlPath, err)
+	for _, part := range filepath.SplitList(dir.Path) {
+		relUrl = path.Join(relUrl, part)
+		payload.Parts = append(payload.Parts, Directory{Name: part, URL: withBaseURL(relUrl)})
 	}
-	err = html.Close()
-	if err != nil {
-		log.Fatalf("Could not write to close index.html: %s\n%s\n", htmlPath, err)
+	if err := page.Execute(buf, payload); err != nil {
+		return fmt.Errorf("Could not generate listing template:\n%s", err)
 	}
-	log.Printf("Generated data for directory: %s\n", dir.Name)
+
+	if err = minifier.Minify("text/html", html, buf); err != nil {
+		return fmt.Errorf("Could not minify page output:\n%s", err)
+	}
 	return nil
 }
 
@@ -501,7 +422,7 @@ func logState() {
 	log.Println("\tInclude:\t", includeRegEx.String())
 	log.Println("\tExclude:\t", excludeRegEx.String())
 	log.Println("\tRecursive:\t", isRecursive)
-	log.Println("\tEmpty:\t\t", isEmpty)
+	log.Println("\tEmpty:\t\t", includeEmpty)
 	log.Println("\tConvert links:\t", convertLink)
 	log.Println("\tSource:\t\t", srcDir)
 	log.Println("\tDstination:\t", dstDir)
@@ -537,20 +458,18 @@ func main() {
 	includeRegExStr := flag.String("i", ".*", "A regex pattern to include files into the listing")
 	excludeRegExStr := flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
 	_isRecursive := flag.Bool("r", true, "Recursively scan the file tree")
-	_isEmpty := flag.Bool("empty", false, "Whether to list empty directories")
+	_includeEmpty := flag.Bool("empty", false, "Whether to list empty directories")
 	_enableSort := flag.Bool("sort", true, "Sort files A-z and by type")
 	rawURL := flag.String("b", "http://localhost", "The base URL")
 	_convertLink := flag.Bool("l", false, "Convert .link files to anchor tags")
+	pageTemplatePath := flag.String("page", "", "Use a custom listing page template")
 	styleTemplatePath := flag.String("style", "", "Use a custom stylesheet file")
-	headerTemplatePath := flag.String("header", "", "Use a custom header template")
-	lineTemplatePath := flag.String("line", "", "Use a custom line template")
-	footerTemplatePath := flag.String("footer", "", "Use a custom footer template")
 	flag.Parse()
 
 	srcDir = defaultSrc
 	dstDir = defaultDst
 	isRecursive = *_isRecursive
-	isEmpty = *_isEmpty
+	includeEmpty = *_includeEmpty
 	enableSort = *_enableSort
 	convertLink = *_convertLink
 
@@ -601,14 +520,8 @@ func main() {
 	minifier.AddFunc("text/html", html.Minify)
 	minifier.AddFunc("application/javascript", js.Minify)
 
-	if header, err = loadTemplate("header", *headerTemplatePath, &headerTemplate); err != nil {
-		log.Fatal("Could not parse header template", err)
-	}
-	if line, err = loadTemplate("line", *lineTemplatePath, &lineTemplate); err != nil {
-		log.Fatal("Could not parse line template", err)
-	}
-	if footer, err = loadTemplate("footer", *footerTemplatePath, &footerTemplate); err != nil {
-		log.Fatal("Could not parse footer template", err)
+	if page, err = loadTemplate("page", *pageTemplatePath, &pageTemplate); err != nil {
+		log.Fatal("Could not parse listing page template", err)
 	}
 	if err = readIfNotEmpty(*styleTemplatePath, &style); err != nil {
 		log.Fatal("Could not read stylesheet file", err)
@@ -626,6 +539,6 @@ func main() {
 		log.Fatalf("Error while generating JSON metadata:\n%s\n", err)
 	}
 	if err = writeHTML(dir); err != nil {
-		log.Fatalf("Error while generating JSON metadata:\n%s\n", err)
+		log.Fatalf("Error while generating HTML page listing:\n%s\n", err)
 	}
 }
