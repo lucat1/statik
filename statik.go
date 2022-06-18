@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -52,14 +53,18 @@ var (
 	includeRegEx *regexp.Regexp
 	excludeRegEx *regexp.Regexp
 	baseURL      *url.URL
+
+	linkMIME *mimetype.MIME
 )
 
 const (
 	linkSuffix  = ".link"
-	linkMIME    = "text/statik-link"
 	regularFile = os.FileMode(0666)
 	defaultSrc  = "./"
 	defaultDst  = "site"
+
+	fuzzyFileName    = "fuzzy.json"
+	metadataFileName = "statik.json"
 )
 
 type Dir struct {
@@ -103,6 +108,17 @@ type Directory struct {
 	Mode        fs.FileMode `json:"-"`
 }
 
+func (d *Directory) MarshalJSON() ([]byte, error) {
+	type DirectoryAlias Directory
+	return json.Marshal(&struct {
+		URL string `json:"url"`
+		*DirectoryAlias
+	}{
+		URL:            d.URL.String(),
+		DirectoryAlias: (*DirectoryAlias)(d),
+	})
+}
+
 type FuzzyFile struct {
 	Name    string         `json:"name"`
 	Path    string         `json:"path"`
@@ -113,10 +129,36 @@ type FuzzyFile struct {
 	Mode    fs.FileMode    `json:"-"`
 }
 
+func (f *FuzzyFile) MarshalJSON() ([]byte, error) {
+	type FuzzyFileAlias FuzzyFile
+	return json.Marshal(&struct {
+		URL  string `json:"url"`
+		MIME string `json:"mime"`
+		*FuzzyFileAlias
+	}{
+		URL:            f.URL.String(),
+		MIME:           f.MIME.String(),
+		FuzzyFileAlias: (*FuzzyFileAlias)(f),
+	})
+}
+
 type File struct {
 	FuzzyFile
 	Size    string    `json:"size"`
 	ModTime time.Time `json:"time"`
+}
+
+func (f *File) MarshalJSON() ([]byte, error) {
+	type FileAlias File
+	return json.Marshal(&struct {
+		URL  string `json:"url"`
+		MIME string `json:"mime"`
+		*FileAlias
+	}{
+		URL:       f.FuzzyFile.URL.String(),
+		MIME:      f.FuzzyFile.MIME.String(),
+		FileAlias: (*FileAlias)(f),
+	})
 }
 
 func (d Directory) GetName() string { return d.Name }
@@ -185,7 +227,9 @@ func newFile(info os.FileInfo, dir string) (fz FuzzyFile, f File, err error) {
 	if rel, err = filepath.Rel(srcDir, abs); err != nil {
 		return
 	}
-	if mime, err = mimetype.DetectFile(abs); err != nil {
+	if strings.HasSuffix(info.Name(), linkSuffix) {
+		mime = linkMIME
+	} else if mime, err = mimetype.DetectFile(abs); err != nil {
 		return
 	}
 
@@ -359,7 +403,7 @@ func generateFiles(files []File, outBuff *bytes.Buffer) {
 			Size:  file.Size,
 			Date:  file.ModTime,
 		}
-		if file.MIME.Is(linkMIME) {
+		if file.MIME == linkMIME {
 			data.Name = data.Name[:len(data.Name)-len(linkSuffix)] // get name without extension
 			data.Size = humanize.Bytes(0)
 
@@ -384,12 +428,12 @@ func writeCopies(dir Directory, fz []FuzzyFile) (err error) {
 	dirs := append([]Directory{dir}, dir.Directories...)
 	for _, d := range dirs {
 		dirs = append(dirs, d.Directories...)
-		if err = os.MkdirAll(d.DstPath, os.ModeDir|os.ModePerm); err != nil {
+		if err = os.MkdirAll(d.DstPath, d.Mode); err != nil {
 			return fmt.Errorf("Could not create output directory %s:\n%s", d.DstPath, err)
 		}
 	}
 	for _, f := range fz {
-		if f.MIME.Is(linkMIME) {
+		if f.MIME == linkMIME {
 			continue
 		}
 		if err = copy(f); err != nil {
@@ -399,7 +443,36 @@ func writeCopies(dir Directory, fz []FuzzyFile) (err error) {
 	return nil
 }
 
-func writeJSON(dir Directory, fz []FuzzyFile) error {
+func jsonToFile[T any](path string, v T) (err error) {
+	var data []byte
+	if data, err = json.Marshal(&v); err != nil {
+		return fmt.Errorf("Could not serialize JSON:\n%s", err)
+	}
+	if err = ioutil.WriteFile(path, data, regularFile); err != nil {
+		return fmt.Errorf("Could not write metadata file %s:\n%s", path, err)
+	}
+	return nil
+}
+
+func writeJSON(dir Directory, fz []FuzzyFile) (err error) {
+	// Write the fuzzy.json file in the root directory
+	if len(fz) != 0 {
+		if err = jsonToFile(path.Join(dir.DstPath, fuzzyFileName), fz); err != nil {
+			return
+		}
+	}
+
+	// Write the directory metadata
+	if err = jsonToFile(path.Join(dir.DstPath, metadataFileName), dir); err != nil {
+		return
+	}
+
+	for _, d := range dir.Directories {
+		if err = writeJSON(d, []FuzzyFile{}); err != nil {
+			return
+		}
+	}
+
 	return nil
 }
 
@@ -409,6 +482,7 @@ func writeHTML(dir Directory) error {
 	if err != nil {
 		log.Fatalf("Could not create output index.html: %s\n%s\n", htmlPath, err)
 	}
+	defer html.Close()
 
 	out := new(bytes.Buffer)
 	generateHeader(dir, out)
@@ -522,7 +596,13 @@ func main() {
 	}
 	logState()
 
-	mimetype.Lookup("text/plain").Extend(func(_ []byte, size uint32) bool { return true }, linkMIME, ".link")
+	// Ugly hack to generate our custom mime, there currently is no way around this
+	{
+		v := true
+		mimetype.Lookup("text/plain").Extend(func(_ []byte, size uint32) bool { return v }, "text/statik-link", ".link")
+		linkMIME = mimetype.Detect([]byte("some plain text"))
+		v = false
+	}
 	minifier = minify.New()
 	minifier.AddFunc("text/css", css.Minify)
 	minifier.AddFunc("text/html", html.Minify)
