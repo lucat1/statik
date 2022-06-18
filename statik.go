@@ -420,11 +420,19 @@ func writeHTML(dir Directory) (err error) {
 	}
 
 	if dir.Path != "." {
-		for _, part := range strings.Split(dir.Path, string(os.PathSeparator)) {
+		parts := strings.Split(dir.Path, string(os.PathSeparator))
+		for _, part := range parts {
 			relUrl = path.Join(relUrl, part)
 			payload.Parts = append(payload.Parts, Directory{Name: part, URL: withBaseURL(relUrl)})
 		}
+		oldDirPath := strings.Join(parts[:len(parts)-1], string(os.PathListSeparator))
+		oldDir := Directory{
+			Name: "..",
+			URL:  withBaseURL(oldDirPath),
+		}
+		payload.Root.Directories = append([]Directory{oldDir}, payload.Root.Directories...)
 	}
+
 	if err := page.Execute(buf, payload); err != nil {
 		return fmt.Errorf("Could not generate listing template:\n%s", err)
 	}
@@ -482,6 +490,8 @@ func main() {
 	_convertLink := flag.Bool("l", false, "Convert .link files to anchor tags")
 	pageTemplatePath := flag.String("page", "", "Use a custom listing page template")
 	styleTemplatePath := flag.String("style", "", "Use a custom stylesheet file")
+	targetHTML := flag.Bool("html", true, "Set false not to build html files (default true)")
+	targetJSON := flag.Bool("json", true, "Set false not to build JSON metadata (default true)")
 	flag.Parse()
 
 	srcDir = defaultSrc
@@ -545,18 +555,31 @@ func main() {
 		log.Fatal("Could not read stylesheet file", err)
 	}
 
-	dir, fz, err := walk(srcDir)
-	if err != nil {
-		log.Fatalf("Error when creating the directory structure:\n%s\n", err)
-	}
-	if err = writeCopies(dir, fz); err != nil {
-		log.Fatalf("Error while copying included files to the destination:\n%s\n", err)
+	var (
+		dir Directory
+		fz  []FuzzyFile
+	)
+	if *targetHTML || *targetJSON {
+		dir, fz, err = walk(srcDir)
+		if err != nil {
+			log.Fatalf("Error when creating the directory structure:\n%s\n", err)
+		}
+
+		if err = writeCopies(dir, fz); err != nil {
+			log.Fatalf("Error while copying included files to the destination:\n%s\n", err)
+		}
 	}
 
-	if err = writeJSON(dir, fz); err != nil {
-		log.Fatalf("Error while generating JSON metadata:\n%s\n", err)
+	if *targetJSON {
+		if err = writeJSON(dir, fz); err != nil {
+			log.Fatalf("Error while generating JSON metadata:\n%s\n", err)
+		}
 	}
-	if err = writeHTML(dir); err != nil {
-		log.Fatalf("Error while generating HTML page listing:\n%s\n", err)
+
+	if *targetHTML {
+		if err = writeHTML(dir); err != nil {
+			log.Fatalf("Error while generating HTML page listing:\n%s\n", err)
+		}
+
 	}
 }
