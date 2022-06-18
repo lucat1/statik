@@ -214,6 +214,7 @@ func newFile(info os.FileInfo, dir string) (fz FuzzyFile, f File, err error) {
 
 		size = humanize.Bytes(0)
 		name = name[:len(name)-len(linkSuffix)]
+		rel = rel[:len(rel)-len(linkSuffix)]
 		mime = linkMIME
 	} else if mime, err = mimetype.DetectFile(abs); err != nil {
 		return
@@ -283,8 +284,16 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 		return
 	}
 
+	// Avoid having the root named "." for estetich purpuses:
+	// Extract an interesting name from the baseURL
+	name := dirInfo.Name()
+	if rel == "." && len(baseURL.Path) > 1 {
+		parts := strings.Split(baseURL.Path, string(os.PathSeparator))
+		name = parts[len(parts)-1]
+	}
+
 	dir = Directory{
-		Name:    dirInfo.Name(),
+		Name:    name,
 		SrcPath: base,
 		DstPath: path.Join(dstDir, rel),
 		URL:     withBaseURL(rel),
@@ -332,11 +341,12 @@ func copy(f FuzzyFile) (err error) {
 
 func writeCopies(dir Directory, fz []FuzzyFile) (err error) {
 	dirs := append([]Directory{dir}, dir.Directories...)
-	for _, d := range dirs {
-		dirs = append(dirs, d.Directories...)
-		if err = os.MkdirAll(d.DstPath, d.Mode); err != nil {
-			return fmt.Errorf("Could not create output directory %s:\n%s", d.DstPath, err)
+	for len(dirs) != 0 {
+		dirs = append(dirs, dirs[0].Directories...)
+		if err = os.MkdirAll(dirs[0].DstPath, dirs[0].Mode); err != nil {
+			return fmt.Errorf("Could not create output directory %s:\n%s", dirs[0].DstPath, err)
 		}
+		dirs = dirs[1:]
 	}
 	for _, f := range fz {
 		if f.MIME == linkMIME {
@@ -385,6 +395,12 @@ func writeJSON(dir Directory, fz []FuzzyFile) (err error) {
 // Populates a HTMLPayload structure to generate an html listing file,
 // propagating the generation recursively.
 func writeHTML(dir Directory) (err error) {
+	for _, d := range dir.Directories {
+		if err = writeHTML(d); err != nil {
+			return err
+		}
+	}
+
 	var (
 		index, relUrl string
 		html          *os.File
@@ -403,9 +419,11 @@ func writeHTML(dir Directory) (err error) {
 		Today:      time.Now(),
 	}
 
-	for _, part := range filepath.SplitList(dir.Path) {
-		relUrl = path.Join(relUrl, part)
-		payload.Parts = append(payload.Parts, Directory{Name: part, URL: withBaseURL(relUrl)})
+	if dir.Path != "." {
+		for _, part := range strings.Split(dir.Path, string(os.PathSeparator)) {
+			relUrl = path.Join(relUrl, part)
+			payload.Parts = append(payload.Parts, Directory{Name: part, URL: withBaseURL(relUrl)})
+		}
 	}
 	if err := page.Execute(buf, payload); err != nil {
 		return fmt.Errorf("Could not generate listing template:\n%s", err)
@@ -475,7 +493,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) < 1 {
-		fmt.Printf("Usage: %s [dst] or [src] [dst]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [dst] or [src] [dst]\n", os.Args[0])
 		os.Exit(1)
 	}
 	if len(args) == 1 {
