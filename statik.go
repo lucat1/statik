@@ -370,7 +370,7 @@ func jsonToFile[T any](path string, v T) (err error) {
 	return nil
 }
 
-func writeJSON(dir Directory, fz []FuzzyFile) (err error) {
+func writeJSON(dir *Directory, fz []FuzzyFile) (err error) {
 	// Write the fuzzy.json file in the root directory
 	if len(fz) != 0 {
 		if err = jsonToFile(path.Join(dir.DstPath, fuzzyFileName), fz); err != nil {
@@ -384,7 +384,7 @@ func writeJSON(dir Directory, fz []FuzzyFile) (err error) {
 	}
 
 	for _, d := range dir.Directories {
-		if err = writeJSON(d, []FuzzyFile{}); err != nil {
+		if err = writeJSON(&d, []FuzzyFile{}); err != nil {
 			return
 		}
 	}
@@ -394,9 +394,9 @@ func writeJSON(dir Directory, fz []FuzzyFile) (err error) {
 
 // Populates a HTMLPayload structure to generate an html listing file,
 // propagating the generation recursively.
-func writeHTML(dir Directory) (err error) {
+func writeHTML(dir *Directory) (err error) {
 	for _, d := range dir.Directories {
-		if err = writeHTML(d); err != nil {
+		if err = writeHTML(&d); err != nil {
 			return err
 		}
 	}
@@ -414,7 +414,7 @@ func writeHTML(dir Directory) (err error) {
 
 	buf := new(bytes.Buffer)
 	payload := HTMLPayload{
-		Root:       dir,
+		Root:       *dir,
 		Stylesheet: template.CSS(style),
 		Today:      time.Now(),
 	}
@@ -498,6 +498,7 @@ func main() {
 	styleTemplatePath := flag.String("style", "", "Use a custom stylesheet file")
 	targetHTML := flag.Bool("html", true, "Set false not to build html files")
 	targetJSON := flag.Bool("json", true, "Set false not to build JSON metadata")
+	enableQuietMode := flag.Bool("q", false, "Set quiet mode: don't print program-state")
 	flag.Parse()
 
 	srcDir = defaultSrc
@@ -542,8 +543,9 @@ func main() {
 	if baseURL, err = url.Parse(*rawURL); err != nil {
 		log.Fatal("Could not parse base URL", err)
 	}
-	// NOTA: in seguito queste funzioni di logging si possono mettere in if con una flag per verbose
-	logState()
+	if !*enableQuietMode {
+		logState()
+	}
 
 	// Ugly hack to generate our custom mime, there currently is no way around this
 	{
@@ -580,15 +582,14 @@ func main() {
 	}
 
 	if *targetJSON {
-		if err = writeJSON(dir, fz); err != nil {
+		if err = writeJSON(&dir, fz); err != nil {
 			log.Fatalf("Error while generating JSON metadata:\n%s\n", err)
 		}
 	}
 
 	if *targetHTML {
-		if err = writeHTML(dir); err != nil {
+		if err = writeHTML(&dir); err != nil {
 			log.Fatalf("Error while generating HTML page listing:\n%s\n", err)
 		}
-
 	}
 }
