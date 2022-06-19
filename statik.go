@@ -419,15 +419,21 @@ func writeHTML(dir Directory) (err error) {
 		Today:      time.Now(),
 	}
 
+	// always append basePath
+	payload.Parts = append(payload.Parts, Directory{
+		Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
+		URL: baseURL,
+	})
 	if dir.Path != "." {
 		parts := strings.Split(dir.Path, string(os.PathSeparator))
 		for _, part := range parts {
 			relUrl = path.Join(relUrl, part)
 			payload.Parts = append(payload.Parts, Directory{Name: part, URL: withBaseURL(relUrl)})
 		}
-		oldDirPath := strings.Join(parts[:len(parts)-1], string(os.PathListSeparator))
+		oldDirPath := path.Join(dir.Path, "..")
 		oldDir := Directory{
 			Name: "..",
+			Path: oldDirPath,
 			URL:  withBaseURL(oldDirPath),
 		}
 		payload.Root.Directories = append([]Directory{oldDir}, payload.Root.Directories...)
@@ -490,8 +496,8 @@ func main() {
 	_convertLink := flag.Bool("l", false, "Convert .link files to anchor tags")
 	pageTemplatePath := flag.String("page", "", "Use a custom listing page template")
 	styleTemplatePath := flag.String("style", "", "Use a custom stylesheet file")
-	targetHTML := flag.Bool("html", true, "Set false not to build html files (default true)")
-	targetJSON := flag.Bool("json", true, "Set false not to build JSON metadata (default true)")
+	targetHTML := flag.Bool("html", true, "Set false not to build html files")
+	targetJSON := flag.Bool("json", true, "Set false not to build JSON metadata")
 	flag.Parse()
 
 	srcDir = defaultSrc
@@ -503,21 +509,23 @@ func main() {
 
 	args := flag.Args()
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [dst] or [src] [dst]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [-flags] [dst] or [src] [dst]\n", os.Args[0])
 		os.Exit(1)
-	}
-	if len(args) == 1 {
+	} else if len(args) == 1 {
 		dstDir = args[0]
 	} else if len(args) == 2 {
 		srcDir = args[0]
 		dstDir = args[1]
+	} else {
+		fmt.Fprintln(os.Stderr, "Invalid number of arguments, max 2 accepted")
+		fmt.Fprintf(os.Stderr, "Usage: %s [-flags] [dst] or [src] [dst]\n", os.Args[0])
+		os.Exit(1)
 	}
 
 	if workDir, err = os.Getwd(); err != nil {
 		log.Fatal("Could not get working directory", err)
 	}
 
-	// NOTA: in seguito queste funzioni di logging si possono mettere in if con una flag per verbose
 	srcDir = getAbsPath(srcDir)
 	dstDir = getAbsPath(dstDir)
 	if err = sanitizeDirectories(); err != nil {
@@ -534,6 +542,7 @@ func main() {
 	if baseURL, err = url.Parse(*rawURL); err != nil {
 		log.Fatal("Could not parse base URL", err)
 	}
+	// NOTA: in seguito queste funzioni di logging si possono mettere in if con una flag per verbose
 	logState()
 
 	// Ugly hack to generate our custom mime, there currently is no way around this
