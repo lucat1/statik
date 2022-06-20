@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
 	"io/ioutil"
 	"log"
@@ -19,312 +21,574 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/tdewolff/minify/v2"
 	"github.com/tdewolff/minify/v2/css"
 	"github.com/tdewolff/minify/v2/html"
 	"github.com/tdewolff/minify/v2/js"
 )
 
-type Dir struct {
-	Name string
-	URL  string
-}
-
-type Header struct {
-	Root       Dir
-	Parts      []Dir
-	FullPath   string
-	Stylesheet template.CSS
-}
-
-type Footer struct {
-	Date time.Time
-}
-
-type Line struct {
-	IsDir bool
-	Name  string
-	URL   string
-	Size  string
-	Date  time.Time
-}
-
-const linkSuffix = ".link"
-
 var (
-	baseDir, outDir string
-	baseURL         *url.URL = nil
-
-	include, exclude                           *regexp.Regexp = nil, nil
-	empty, recursive, sortEntries, converLinks bool
-
+	//go:embed "page.gohtml"
+	pageTemplate string
 	//go:embed "style.css"
-	style string
-	//go:embed "header.gohtml"
-	rawHeader string
-	//go:embed "line.gohtml"
-	rawLine string
-	//go:embed "footer.gohtml"
-	rawFooter string
+	style    string
+	page     *template.Template
+	minifier *minify.M
 
-	header, footer, line *template.Template
+	workDir string
+	srcDir  string
+	dstDir  string
+
+	isRecursive  bool
+	includeEmpty bool
+	enableSort   bool
+	convertLink  bool
+	includeRegEx *regexp.Regexp
+	excludeRegEx *regexp.Regexp
+	baseURL      *url.URL
+
+	linkMIME *mimetype.MIME
 )
 
-// joins the baseUrl path with the given relative path and returns the url as a string
-func withBaseURL(rel string) string {
-	cpy := baseURL.Path
-	baseURL.Path = path.Join(baseURL.Path, rel)
-	res := baseURL.String()
-	baseURL.Path = cpy
-	return res
+const (
+	linkSuffix  = ".link"
+	regularFile = os.FileMode(0666)
+	defaultSrc  = "./"
+	defaultDst  = "site"
+
+	fuzzyFileName    = "fuzzy.json"
+	metadataFileName = "statik.json"
+)
+
+type HTMLPayload struct {
+	Parts      []Directory
+	Root       Directory
+	Stylesheet template.CSS
+	Today      time.Time
 }
 
-func gen(tmpl *template.Template, data interface{}, out io.Writer) {
-	if err := tmpl.Execute(out, data); err != nil {
-		log.Fatalf("could not generate template for the %s section:\n%s\n", tmpl.Name(), err)
-	}
+type Directory struct {
+	Name        string      `json:"name"`
+	Path        string      `json:"path"`
+	SrcPath     string      `json:"-"`
+	DstPath     string      `json:"-"`
+	URL         *url.URL    `json:"url"`
+	Directories []Directory `json:"directories"`
+	Files       []File      `json:"files"`
+	Size        string      `json:"size"`
+	ModTime     time.Time   `json:"time"`
+	Mode        fs.FileMode `json:"-"`
 }
 
-func copy(src, dest string) {
-	input, err := ioutil.ReadFile(src)
-	if err != nil {
-		log.Fatalf("Could not open source file for copying: %s\n%s\n", src, err)
-	}
-	err = ioutil.WriteFile(dest, input, 0644)
-	if err != nil {
-		log.Fatalf("Could not write to destination file for copying: %s\n%s\n", dest, err)
-	}
+func (d *Directory) MarshalJSON() ([]byte, error) {
+	type DirectoryAlias Directory
+	return json.Marshal(&struct {
+		URL string `json:"url"`
+		*DirectoryAlias
+	}{
+		URL:            d.URL.String(),
+		DirectoryAlias: (*DirectoryAlias)(d),
+	})
 }
 
-func filter(entries []fs.FileInfo) []fs.FileInfo {
-	filtered := []fs.FileInfo{}
-	for _, entry := range entries {
-		if entry.IsDir() && !exclude.MatchString(entry.Name()) || (!entry.IsDir() && include.MatchString(entry.Name()) && !exclude.MatchString(entry.Name())) {
-			filtered = append(filtered, entry)
-		}
-	}
-	return filtered
+type FuzzyFile struct {
+	Name    string         `json:"name"`
+	Path    string         `json:"path"`
+	SrcPath string         `json:"-"`
+	DstPath string         `json:"-"`
+	URL     *url.URL       `json:"url"`
+	MIME    *mimetype.MIME `json:"mime"`
+	Mode    fs.FileMode    `json:"-"`
 }
 
-func generate(m *minify.M, dir string, parts []string) bool {
-	entries, err := ioutil.ReadDir(dir)
-	if err != nil {
-		log.Fatalf("Could not read input directory: %s\n%s\n", dir, err)
-	}
-	entries = filter(entries)
-	if len(entries) == 0 {
-		return empty
-	}
-	if sortEntries {
-		sort.Slice(entries, func(i, j int) bool {
-			isFirstEntryDir := entries[i].IsDir()
-			isSecondEntryDir := entries[j].IsDir()
-			return isFirstEntryDir && !isSecondEntryDir ||
-				(isFirstEntryDir || !isSecondEntryDir) &&
-					entries[i].Name() < entries[j].Name()
-		})
-	}
-
-	rel := path.Join(parts...)
-	outDir := path.Join(outDir, rel)
-	if err := os.Mkdir(outDir, os.ModePerm); err != nil {
-		log.Fatalf("Could not create output *sub*directory: %s\n%s\n", outDir, err)
-	}
-	htmlPath := path.Join(outDir, "index.html")
-	html, err := os.OpenFile(htmlPath, os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		log.Fatalf("Could not create output index.html: %s\n%s\n", htmlPath, err)
-	}
-
-	out := new(bytes.Buffer)
-	// Generate the header and the double dots back anchor when appropriate
-	{
-		p, url := []Dir{}, ""
-		for _, part := range parts {
-			url = path.Join(url, part)
-			p = append(p, Dir{Name: part, URL: withBaseURL(url)})
-		}
-		gen(header, Header{
-			Root: Dir{
-				Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
-				URL:  baseURL.String(),
-			},
-			Parts:      p,
-			FullPath:   path.Join(baseURL.Path+rel) + "/",
-			Stylesheet: template.CSS(style),
-		}, out)
-	}
-	// Populte the back line
-	{
-		if len(parts) != 0 {
-			gen(line, Line{
-				IsDir: true,
-				Name:  "..",
-				URL:   withBaseURL(path.Join(rel, "..")),
-				Size:  humanize.Bytes(0),
-			}, out)
-		}
-	}
-
-	for _, entry := range entries {
-		pth := path.Join(dir, entry.Name())
-		// Avoid recursive infinite loop
-		if pth == outDir {
-			continue
-		}
-
-		data := Line{
-			IsDir: entry.IsDir(),
-			Name:  entry.Name(),
-			URL:   withBaseURL(path.Join(rel, entry.Name())),
-			Size:  humanize.Bytes(uint64(entry.Size())),
-			Date:  entry.ModTime(),
-		}
-		if strings.HasSuffix(pth, linkSuffix) {
-			data.Name = data.Name[:len(data.Name)-len(linkSuffix)]
-			data.Size = humanize.Bytes(0)
-
-			raw, err := ioutil.ReadFile(pth)
-			if err != nil {
-				log.Fatalf("Could not read link file: %s\n%s\n", pth, err)
-			}
-			rawStr := string(raw)
-			u, err := url.Parse(strings.TrimSpace(rawStr))
-			if err != nil {
-				log.Fatalf("Could not parse URL in file: %s\nThe value is: %s\n%s\n", pth, raw, err)
-			}
-
-			data.URL = u.String()
-			gen(line, data, out)
-			continue
-		}
-
-		// Only list directories when recursing and only those which are not empty
-		if !entry.IsDir() || recursive && generate(m, pth, append(parts, entry.Name())) {
-			gen(line, data, out)
-		}
-
-		// Copy all files over to the web root
-		if !entry.IsDir() {
-			copy(pth, path.Join(outDir, entry.Name()))
-		}
-	}
-	gen(footer, Footer{Date: time.Now()}, out)
-	if err := m.Minify("text/html", html, out); err != nil {
-		log.Fatalf("Could not write to index.html: %s\n%s\n", htmlPath, err)
-	}
-	if err := html.Close(); err != nil {
-		log.Fatalf("Could not write to close index.html: %s\n%s\n", htmlPath, err)
-	}
-	log.Printf("Generated data for directory: %s\n", dir)
-
-	return !empty
+func (f *FuzzyFile) MarshalJSON() ([]byte, error) {
+	type FuzzyFileAlias FuzzyFile
+	return json.Marshal(&struct {
+		URL  string `json:"url"`
+		MIME string `json:"mime"`
+		*FuzzyFileAlias
+	}{
+		URL:            f.URL.String(),
+		MIME:           f.MIME.String(),
+		FuzzyFileAlias: (*FuzzyFileAlias)(f),
+	})
 }
 
-func loadTemplate(name string, path string, def *string, dest **template.Template) {
-	var (
-		content []byte
-		err     error
-	)
+type File struct {
+	FuzzyFile
+	Size    string    `json:"size"`
+	ModTime time.Time `json:"time"`
+}
+
+func (f *File) MarshalJSON() ([]byte, error) {
+	type FileAlias File
+	return json.Marshal(&struct {
+		URL  string `json:"url"`
+		MIME string `json:"mime"`
+		*FileAlias
+	}{
+		URL:       f.FuzzyFile.URL.String(),
+		MIME:      f.FuzzyFile.MIME.String(),
+		FileAlias: (*FileAlias)(f),
+	})
+}
+
+func (d Directory) isEmpty() bool { return len(d.Directories) == 0 && len(d.Files) == 0 }
+
+// joins the baseURL with the given relative path in a new URL instance
+func withBaseURL(rel string) (url *url.URL) {
+	url, _ = url.Parse(baseURL.String()) // its clear that there can't be error here :)
+	url.Path = path.Join(baseURL.Path, rel)
+	return
+}
+
+func getAbsPath(rel string) string {
+	if filepath.IsAbs(rel) {
+		return rel
+	}
+
+	return path.Join(workDir, rel)
+}
+
+func readIfNotEmpty(path string, dst *string) (err error) {
+	var content []byte
 	if path != "" {
-		if content, err = ioutil.ReadFile(path); err != nil {
-			log.Fatalf("Could not read %s template file %s:\n%s\n", name, path, err)
+		content, err = ioutil.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("Could not read file: %s\n%s", path, err)
 		}
-		*def = string(content)
+		*dst = string(content)
 	}
-	if *dest, err = template.New(name).Parse(*def); err != nil {
-		log.Fatalf("Could not parse %s template:\n%s\n", name, path, err)
+	return nil
+}
+
+func loadTemplate(name string, path string, buf *string) (tmpl *template.Template, err error) {
+	if err = readIfNotEmpty(path, buf); err != nil {
+		return
 	}
+	if tmpl, err = template.New(name).Parse(*buf); err != nil {
+		return
+	}
+	return
+}
+
+func isDir(path string) (err error) {
+	dir, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !dir.IsDir() {
+		return fmt.Errorf("Expected %s to be a directory", path)
+	}
+	return nil
+}
+
+// The input path dir is assumed to be already absolute
+func newFile(info os.FileInfo, dir string) (fz FuzzyFile, f File, err error) {
+	if info.IsDir() {
+		return fz, f, errors.New("newFile has been called with a os.FileInfo of type Directory")
+	}
+
+	var (
+		rel, name, size string
+		raw             []byte
+		url             *url.URL
+		mime            *mimetype.MIME
+	)
+	abs := path.Join(dir, info.Name())
+	if rel, err = filepath.Rel(srcDir, abs); err != nil {
+		return
+	}
+
+	url = withBaseURL(rel)
+	size = humanize.Bytes(uint64(info.Size()))
+	name = info.Name()
+	if strings.HasSuffix(info.Name(), linkSuffix) {
+		if raw, err = ioutil.ReadFile(abs); err != nil {
+			return fz, f, fmt.Errorf("Could not read link file: %s\n%s\n", abs, err)
+		}
+		if url, err = url.Parse(strings.TrimSpace(string(raw))); err != nil {
+			return fz, f, fmt.Errorf("Could not parse URL in file %s\n: %s\n%s\n", abs, raw, err)
+		}
+
+		size = humanize.Bytes(0)
+		name = name[:len(name)-len(linkSuffix)]
+		rel = rel[:len(rel)-len(linkSuffix)]
+		mime = linkMIME
+	} else if mime, err = mimetype.DetectFile(abs); err != nil {
+		return
+	}
+
+	fz = FuzzyFile{
+		Name:    name,
+		Path:    rel,
+		SrcPath: abs,
+		DstPath: path.Join(dstDir, rel),
+		URL:     url,
+		MIME:    mime,
+		Mode:    info.Mode(),
+	}
+	return fz, File{
+		FuzzyFile: fz,
+		Size:      size,
+		ModTime:   info.ModTime(),
+	}, nil
+}
+
+type Named interface {
+	GetName() string
+}
+
+func (d Directory) GetName() string { return d.Name }
+func (f File) GetName() string      { return f.FuzzyFile.Name }
+
+func sortByName[T Named](infos []T) {
+	sort.Slice(infos, func(i, j int) bool {
+		return infos[i].GetName() < infos[j].GetName()
+	})
+}
+
+func includeDir(info fs.FileInfo) bool {
+	return !excludeRegEx.MatchString(info.Name())
+}
+
+func includeFile(info fs.FileInfo) bool {
+	return includeRegEx.MatchString(info.Name()) && !excludeRegEx.MatchString(info.Name())
+}
+
+func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
+	// Avoid infinite recursion over the destination directory
+	if base == dstDir {
+		return
+	}
+
+	var (
+		infos   []fs.FileInfo
+		dirInfo fs.FileInfo
+		subdir  Directory
+		subfz   []FuzzyFile
+		file    File
+		fuzzy   FuzzyFile
+		rel     string
+	)
+	if infos, err = ioutil.ReadDir(base); err != nil {
+		return dir, fz, fmt.Errorf("Could not read directory %s:\n%s", base, err)
+	}
+
+	if dirInfo, err = os.Stat(base); err != nil {
+		return dir, fz, fmt.Errorf("Could not stat directory %s:\n%s", base, err)
+	}
+
+	if rel, err = filepath.Rel(srcDir, base); err != nil {
+		return
+	}
+
+	// Avoid having the root named "." for estetich purpuses:
+	// Extract an interesting name from the baseURL
+	name := dirInfo.Name()
+	if rel == "." && len(baseURL.Path) > 1 {
+		parts := strings.Split(baseURL.Path, string(os.PathSeparator))
+		name = parts[len(parts)-1]
+	}
+
+	dir = Directory{
+		Name:    name,
+		SrcPath: base,
+		DstPath: path.Join(dstDir, rel),
+		URL:     withBaseURL(rel),
+		Path:    rel,
+		Size:    humanize.Bytes(uint64(dirInfo.Size())),
+		ModTime: dirInfo.ModTime(),
+		Mode:    dirInfo.Mode(),
+	}
+
+	for _, info := range infos {
+		if info.IsDir() && isRecursive && includeDir(info) {
+			if subdir, subfz, err = walk(path.Join(base, info.Name())); err != nil {
+				return
+			}
+			if !subdir.isEmpty() || includeEmpty {
+				// include emptydir if isEmptyflag is setted
+				dir.Directories = append(dir.Directories, subdir)
+				fz = append(fz, subfz...)
+			}
+		} else if !info.IsDir() && includeFile(info) {
+			if fuzzy, file, err = newFile(info, base); err != nil {
+				return dir, fz, fmt.Errorf("Error while generating the File structure:\n%s", err)
+			}
+			fz = append(fz, fuzzy)
+			dir.Files = append(dir.Files, file)
+		}
+	}
+	if enableSort {
+		sortByName(dir.Files)
+		sortByName(dir.Directories)
+	}
+	return
+}
+
+func copy(f FuzzyFile) (err error) {
+	var input []byte
+	if input, err = ioutil.ReadFile(f.SrcPath); err != nil {
+		return fmt.Errorf("Could not open %s for reading:\n%s", f.SrcPath, err)
+	}
+	if err = ioutil.WriteFile(f.DstPath, input, f.Mode); err != nil {
+		return fmt.Errorf("Could not open %s for writing:\n%s", f.DstPath, err)
+	}
+	return nil
+}
+
+func writeCopies(dir Directory, fz []FuzzyFile) (err error) {
+	dirs := append([]Directory{dir}, dir.Directories...)
+	for len(dirs) != 0 {
+		dirs = append(dirs, dirs[0].Directories...)
+		if err = os.MkdirAll(dirs[0].DstPath, dirs[0].Mode); err != nil {
+			return fmt.Errorf("Could not create output directory %s:\n%s", dirs[0].DstPath, err)
+		}
+		dirs = dirs[1:]
+	}
+	for _, f := range fz {
+		if f.MIME == linkMIME {
+			continue
+		}
+		if err = copy(f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func jsonToFile[T any](path string, v T) (err error) {
+	var data []byte
+	if data, err = json.Marshal(&v); err != nil {
+		return fmt.Errorf("Could not serialize JSON:\n%s", err)
+	}
+	if err = ioutil.WriteFile(path, data, regularFile); err != nil {
+		return fmt.Errorf("Could not write metadata file %s:\n%s", path, err)
+	}
+	return nil
+}
+
+func writeJSON(dir *Directory, fz []FuzzyFile) (err error) {
+	// Write the fuzzy.json file in the root directory
+	if len(fz) != 0 {
+		if err = jsonToFile(path.Join(dir.DstPath, fuzzyFileName), fz); err != nil {
+			return
+		}
+	}
+
+	// Write the directory metadata
+	if err = jsonToFile(path.Join(dir.DstPath, metadataFileName), dir); err != nil {
+		return
+	}
+
+	for _, d := range dir.Directories {
+		if err = writeJSON(&d, []FuzzyFile{}); err != nil {
+			return
+		}
+	}
+
+	return nil
+}
+
+// Populates a HTMLPayload structure to generate an html listing file,
+// propagating the generation recursively.
+func writeHTML(dir *Directory) (err error) {
+	for _, d := range dir.Directories {
+		if err = writeHTML(&d); err != nil {
+			return err
+		}
+	}
+
+	var (
+		index, relUrl string
+		html          *os.File
+	)
+
+	index = path.Join(dir.DstPath, "index.html")
+	if html, err = os.OpenFile(index, os.O_RDWR|os.O_CREATE, regularFile); err != nil {
+		return fmt.Errorf("Could not create output file %s:\n%s\n", index, err)
+	}
+	defer html.Close()
+
+	buf := new(bytes.Buffer)
+	payload := HTMLPayload{
+		Root:       *dir,
+		Stylesheet: template.CSS(style),
+		Today:      time.Now(),
+	}
+
+	// Always append the last segment of the baseURL as a link back to the home
+	payload.Parts = append(payload.Parts, Directory{
+		Name: path.Base(baseURL.Path),
+		URL:  baseURL,
+	})
+	if dir.Path != "." {
+		parts := strings.Split(dir.Path, string(os.PathSeparator))
+		for _, part := range parts {
+			relUrl = path.Join(relUrl, part)
+			payload.Parts = append(payload.Parts, Directory{Name: part, URL: withBaseURL(relUrl)})
+		}
+
+		back := path.Join(dir.Path, "..")
+		payload.Root.Directories = append([]Directory{{
+			Name: "..",
+			Path: back,
+			URL:  withBaseURL(back),
+		}}, payload.Root.Directories...)
+	}
+
+	if err := page.Execute(buf, payload); err != nil {
+		return fmt.Errorf("Could not generate listing template:\n%s", err)
+	}
+
+	if err = minifier.Minify("text/html", html, buf); err != nil {
+		return fmt.Errorf("Could not minify page output:\n%s", err)
+	}
+	return nil
+}
+
+func logState() {
+}
+
+func sanitizeDirectories() (err error) {
+	if strings.HasPrefix(srcDir, dstDir) {
+		return errors.New("The output directory cannot be a parent of the input directory")
+	}
+
+	if _, err = os.OpenFile(srcDir, os.O_RDONLY, os.ModeDir|os.ModePerm); err != nil && os.IsPermission(err) {
+		return fmt.Errorf("Cannot open source directory for reading: %s\n%s", srcDir, err)
+	}
+
+	if err := isDir(srcDir); err != nil {
+		return err
+	}
+
+	// check if outputDir is writable
+	if _, err = os.OpenFile(dstDir, os.O_WRONLY, os.ModeDir|os.ModePerm); err != nil && os.IsPermission(err) {
+		return fmt.Errorf("Cannot open output directory for writing: %s\n%s", dstDir, err)
+	}
+
+	if err = os.RemoveAll(dstDir); err != nil {
+		return fmt.Errorf("Cannot clear output directory: %s\n%s", dstDir, err)
+	}
+	return nil
 }
 
 func main() {
-	i := flag.String("i", ".*", "A regex pattern to include files into the listing")
-	e := flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
-	r := flag.Bool("r", true, "Recursively scan the file tree")
-	emp := flag.Bool("empty", false, "Whether to list empty directories")
-	s := flag.Bool("sort", true, "Sort files A-z and by type")
-	b := flag.String("b", "http://localhost", "The base URL")
-	l := flag.Bool("l", false, "Convert .link files to anchor tags")
-	argstyle := flag.String("style", "", "Use a custom stylesheet file")
-	argfooter := flag.String("footer", "", "Use a custom footer template")
-	argheader := flag.String("header", "", "Use a custom header template")
-	argline := flag.String("line", "", "Use a custom line template")
+	var err error
+	includeRegExStr := flag.String("i", ".*", "A regex pattern to include files into the listing")
+	excludeRegExStr := flag.String("e", "\\.git(hub)?", "A regex pattern to exclude files from the listing")
+	_isRecursive := flag.Bool("r", true, "Recursively scan the file tree")
+	_includeEmpty := flag.Bool("empty", false, "Whether to list empty directories")
+	_enableSort := flag.Bool("sort", true, "Sort files A-z and by type")
+	rawURL := flag.String("b", "http://localhost", "The base URL")
+	_convertLink := flag.Bool("l", false, "Convert .link files to anchor tags")
+	pageTemplatePath := flag.String("page", "", "Use a custom listing page template")
+	styleTemplatePath := flag.String("style", "", "Use a custom stylesheet file")
+	targetHTML := flag.Bool("html", true, "Set false not to build html files")
+	targetJSON := flag.Bool("json", true, "Set false not to build JSON metadata")
+	debug := flag.Bool("d", false, "Print debug logs")
 	flag.Parse()
 
-	args := flag.Args()
-	src, dest := ".", "site"
-	if len(args) > 2 {
-		log.Fatal("Invalid number of aruments, expected two at max")
-	}
-	if len(args) == 1 {
-		dest = args[0]
-	} else if len(args) == 2 {
-		src = args[0]
-		dest = args[1]
-	}
-	log.Println("Running with parameters:")
-	log.Println("\tInclude:\t", *i)
-	log.Println("\tExclude:\t", *e)
-	log.Println("\tRecursive:\t", *r)
-	log.Println("\tEmpty:\t\t", *emp)
-	log.Println("\tConvert links:\t", *l)
-	log.Println("\tSource:\t\t", src)
-	log.Println("\tDestination:\t", dest)
-	log.Println("\tBase URL:\t", *b)
-	log.Println("\tStyle:\t\t", *argstyle)
-	log.Println("\tFooter:\t\t", *argfooter)
-	log.Println("\tHeader:\t\t", *argheader)
-	log.Println("\tline:\t\t", *argline)
+	srcDir = defaultSrc
+	dstDir = defaultDst
+	isRecursive = *_isRecursive
+	includeEmpty = *_includeEmpty
+	enableSort = *_enableSort
+	convertLink = *_convertLink
 
-	var err error
-	if include, err = regexp.Compile(*i); err != nil {
+	args := flag.Args()
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: %s [dst] or [src] [dst]\n", os.Args[0])
+		os.Exit(1)
+	} else if len(args) == 1 {
+		dstDir = args[0]
+	} else if len(args) == 2 {
+		srcDir = args[0]
+		dstDir = args[1]
+	} else {
+		fmt.Fprintln(os.Stderr, "Invalid number of arguments, max 2 accepted")
+		fmt.Fprintf(os.Stderr, "Usage: %s [-flags] [dst] or [src] [dst]\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	if workDir, err = os.Getwd(); err != nil {
+		log.Fatal("Could not get working directory", err)
+	}
+
+	srcDir = getAbsPath(srcDir)
+	dstDir = getAbsPath(dstDir)
+	if err = sanitizeDirectories(); err != nil {
+		log.Fatal("Error while checking src and dst paths", err)
+	}
+
+	if includeRegEx, err = regexp.Compile(*includeRegExStr); err != nil {
 		log.Fatal("Invalid regexp for include matching", err)
 	}
-	if exclude, err = regexp.Compile(*e); err != nil {
+	if excludeRegEx, err = regexp.Compile(*excludeRegExStr); err != nil {
 		log.Fatal("Invalid regexp for exclude matching", err)
 	}
-	recursive = *r
-	empty = *emp
-	sortEntries = *s
-	converLinks = *l
 
-	var wd string
-	if !filepath.IsAbs(src) || !filepath.IsAbs(dest) {
-		wd, err = os.Getwd()
+	if baseURL, err = url.Parse(*rawURL); err != nil {
+		log.Fatal("Could not parse base URL", err)
+	}
+	if *debug {
+		log.Println("Running with parameters:")
+		log.Println("\tInclude:\t", includeRegEx.String())
+		log.Println("\tExclude:\t", excludeRegEx.String())
+		log.Println("\tRecursive:\t", isRecursive)
+		log.Println("\tEmpty:\t\t", includeEmpty)
+		log.Println("\tConvert links:\t", convertLink)
+		log.Println("\tSource:\t\t", srcDir)
+		log.Println("\tDstination:\t", dstDir)
+		log.Println("\tBase URL:\t", baseURL.String())
+	}
+
+	// Ugly hack to generate our custom mime, there currently is no way around this
+	{
+		v := true
+		mimetype.Lookup("text/plain").Extend(func(_ []byte, size uint32) bool { return v }, "text/statik-link", ".link")
+		linkMIME = mimetype.Detect([]byte("some plain text"))
+		v = false
+	}
+	minifier = minify.New()
+	minifier.AddFunc("text/css", css.Minify)
+	minifier.AddFunc("text/html", html.Minify)
+	minifier.AddFunc("application/javascript", js.Minify)
+
+	if page, err = loadTemplate("page", *pageTemplatePath, &pageTemplate); err != nil {
+		log.Fatal("Could not parse listing page template", err)
+	}
+	if err = readIfNotEmpty(*styleTemplatePath, &style); err != nil {
+		log.Fatal("Could not read stylesheet file", err)
+	}
+
+	var (
+		dir Directory
+		fz  []FuzzyFile
+	)
+	if *targetHTML || *targetJSON {
+		dir, fz, err = walk(srcDir)
 		if err != nil {
-			log.Fatal("Could not get currently working directory", err)
+			log.Fatalf("Error while walking the filesystem:\n%s\n", err)
+		}
+
+		if err = writeCopies(dir, fz); err != nil {
+			log.Fatalf("Error while copying included files to the destination:\n%s\n", err)
 		}
 	}
-	if baseDir = src; !filepath.IsAbs(src) {
-		baseDir = path.Join(wd, src)
-	}
-	if outDir = dest; !filepath.IsAbs(dest) {
-		outDir = path.Join(wd, dest)
-	}
-	if _, err := os.Stat(outDir); err == nil {
-		if err = os.RemoveAll(outDir); err != nil {
-			log.Fatalf("Could not remove output directory previous contents: %s\n%s\n", outDir, err)
+
+	if *targetJSON {
+		if err = writeJSON(&dir, fz); err != nil {
+			log.Fatalf("Error while generating JSON metadata:\n%s\n", err)
 		}
 	}
-	if baseURL, err = url.Parse(*b); err != nil {
-		log.Fatalf("Could not parse base URL: %s\n%s\n", *b, err)
-	}
 
-	loadTemplate("header", *argheader, &rawHeader, &header)
-	loadTemplate("line", *argline, &rawLine, &line)
-	loadTemplate("footer", *argfooter, &rawFooter, &footer)
-
-	if *argstyle != "" {
-		var content []byte
-		if content, err = ioutil.ReadFile(*argstyle); err != nil {
-			log.Fatalf("Could not read stylesheet file %s:\n%s\n", *argstyle, err)
+	if *targetHTML {
+		if err = writeHTML(&dir); err != nil {
+			log.Fatalf("Error while generating HTML page listing:\n%s\n", err)
 		}
-		style = string(content)
 	}
-
-	m := minify.New()
-	m.AddFunc("text/css", css.Minify)
-	m.AddFunc("text/html", html.Minify)
-	m.AddFunc("application/javascript", js.Minify)
-	generate(m, baseDir, []string{})
 }
