@@ -7,7 +7,7 @@
   </head>
   <body>
     <h1>
-      Index of <a href="https://csunibo.github.io/">csunibo</a>/{{ range $i,$p := .Parts }}<a href="{{ $p.URL }}">{{ $p.Name }}</a>/{{ end }}
+      Index of /{{ range $i,$p := .Parts }}<a href="{{ $p.URL }}">{{ $p.Name }}</a>/{{ end }}
     </h1>
     <hr>
     <div class="g">

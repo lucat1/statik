@@ -419,10 +419,10 @@ func writeHTML(dir *Directory) (err error) {
 		Today:      time.Now(),
 	}
 
-	// always append basePath
+	// Always append the last segment of the baseURL as a link back to the home
 	payload.Parts = append(payload.Parts, Directory{
-		Name: strings.TrimPrefix(strings.TrimSuffix(baseURL.Path, "/"), "/"),
-		URL: baseURL,
+		Name: path.Base(baseURL.Path),
+		URL:  baseURL,
 	})
 	if dir.Path != "." {
 		parts := strings.Split(dir.Path, string(os.PathSeparator))
@@ -430,13 +430,13 @@ func writeHTML(dir *Directory) (err error) {
 			relUrl = path.Join(relUrl, part)
 			payload.Parts = append(payload.Parts, Directory{Name: part, URL: withBaseURL(relUrl)})
 		}
-		oldDirPath := path.Join(dir.Path, "..")
-		oldDir := Directory{
+
+		back := path.Join(dir.Path, "..")
+		payload.Root.Directories = append([]Directory{{
 			Name: "..",
-			Path: oldDirPath,
-			URL:  withBaseURL(oldDirPath),
-		}
-		payload.Root.Directories = append([]Directory{oldDir}, payload.Root.Directories...)
+			Path: back,
+			URL:  withBaseURL(back),
+		}}, payload.Root.Directories...)
 	}
 
 	if err := page.Execute(buf, payload); err != nil {
@@ -450,15 +450,6 @@ func writeHTML(dir *Directory) (err error) {
 }
 
 func logState() {
-	log.Println("Running with parameters:")
-	log.Println("\tInclude:\t", includeRegEx.String())
-	log.Println("\tExclude:\t", excludeRegEx.String())
-	log.Println("\tRecursive:\t", isRecursive)
-	log.Println("\tEmpty:\t\t", includeEmpty)
-	log.Println("\tConvert links:\t", convertLink)
-	log.Println("\tSource:\t\t", srcDir)
-	log.Println("\tDstination:\t", dstDir)
-	log.Println("\tBase URL:\t", baseURL.String())
 }
 
 func sanitizeDirectories() (err error) {
@@ -498,7 +489,7 @@ func main() {
 	styleTemplatePath := flag.String("style", "", "Use a custom stylesheet file")
 	targetHTML := flag.Bool("html", true, "Set false not to build html files")
 	targetJSON := flag.Bool("json", true, "Set false not to build JSON metadata")
-	enableQuietMode := flag.Bool("q", false, "Set quiet mode: don't print program-state")
+	debug := flag.Bool("d", false, "Print debug logs")
 	flag.Parse()
 
 	srcDir = defaultSrc
@@ -510,7 +501,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-flags] [dst] or [src] [dst]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [dst] or [src] [dst]\n", os.Args[0])
 		os.Exit(1)
 	} else if len(args) == 1 {
 		dstDir = args[0]
@@ -543,8 +534,16 @@ func main() {
 	if baseURL, err = url.Parse(*rawURL); err != nil {
 		log.Fatal("Could not parse base URL", err)
 	}
-	if !*enableQuietMode {
-		logState()
+	if *debug {
+		log.Println("Running with parameters:")
+		log.Println("\tInclude:\t", includeRegEx.String())
+		log.Println("\tExclude:\t", excludeRegEx.String())
+		log.Println("\tRecursive:\t", isRecursive)
+		log.Println("\tEmpty:\t\t", includeEmpty)
+		log.Println("\tConvert links:\t", convertLink)
+		log.Println("\tSource:\t\t", srcDir)
+		log.Println("\tDstination:\t", dstDir)
+		log.Println("\tBase URL:\t", baseURL.String())
 	}
 
 	// Ugly hack to generate our custom mime, there currently is no way around this
@@ -573,7 +572,7 @@ func main() {
 	if *targetHTML || *targetJSON {
 		dir, fz, err = walk(srcDir)
 		if err != nil {
-			log.Fatalf("Error when creating the directory structure:\n%s\n", err)
+			log.Fatalf("Error while walking the filesystem:\n%s\n", err)
 		}
 
 		if err = writeCopies(dir, fz); err != nil {
