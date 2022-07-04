@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-06/schema#",
+  "description": "Types for the outputs of statik.json ([]Directory) and fuzzy.json ([]FuzzyFile)",
+  "$defs": {
+    "Directory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "qt-uri-protocols": ["http"]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "directories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Directory"
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/File"
+          }
+        }
+      },
+      "required": ["name", "path", "size", "time", "url"],
+      "title": "Directory"
+    },
+    "FuzzyFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "mime": {
+          "type": "string",
+          "format": "mime"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": ["mime", "name", "path", "url"],
+      "title": "FuzzyFile"
+    },
+    "File": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "mime": {
+          "type": "string",
+          "format": "mime"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["mime", "name", "path", "url", "time", "size"],
+      "title": "File"
+    }
+  },
+  "$ref": "#/$defs/Directory"
+}

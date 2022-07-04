@@ -57,8 +57,9 @@ const (
 	defaultSrc  = "./"
 	defaultDst  = "site"
 
-	fuzzyFileName    = "fuzzy.json"
-	metadataFileName = "statik.json"
+	fuzzyFileName     = "fuzzy.json"
+	metadataFileName  = "statik.json"
+	RFC3339TimeFormat = "2006-01-02T15:04:05Z"
 )
 
 type HTMLPayload struct {
@@ -74,20 +75,24 @@ type Directory struct {
 	SrcPath     string      `json:"-"`
 	DstPath     string      `json:"-"`
 	URL         *url.URL    `json:"url"`
-	Directories []Directory `json:"directories"`
-	Files       []File      `json:"files"`
 	Size        string      `json:"size"`
 	ModTime     time.Time   `json:"time"`
 	Mode        fs.FileMode `json:"-"`
+	Directories []Directory `json:"directories,omitempty"`
+	Files       []File      `json:"files,omitempty"`
 }
+
+func (d Directory) isEmpty() bool { return len(d.Directories) == 0 && len(d.Files) == 0 }
 
 func (d *Directory) MarshalJSON() ([]byte, error) {
 	type DirectoryAlias Directory
 	return json.Marshal(&struct {
-		URL string `json:"url"`
+		URL     string `json:"url"`
+		ModTime string `json:"time"`
 		*DirectoryAlias
 	}{
 		URL:            d.URL.String(),
+		ModTime:        d.ModTime.Format(RFC3339TimeFormat),
 		DirectoryAlias: (*DirectoryAlias)(d),
 	})
 }
@@ -122,23 +127,28 @@ type File struct {
 }
 
 func (f *File) MarshalJSON() ([]byte, error) {
-	type FileAlias File
+	// Unfortunately due to how go's embedding works, there is no other way
+	// then to explicitly state all fields and reassign them
 	return json.Marshal(&struct {
-		URL  string `json:"url"`
-		MIME string `json:"mime"`
-		*FileAlias
+		Name    string `json:"name"`
+		Path    string `json:"path"`
+		URL     string `json:"url"`
+		MIME    string `json:"mime"`
+		Size    string `json:"size"`
+		ModTime string `json:"time"`
 	}{
-		URL:       f.FuzzyFile.URL.String(),
-		MIME:      f.FuzzyFile.MIME.String(),
-		FileAlias: (*FileAlias)(f),
+		Name:    f.FuzzyFile.Name,
+		Path:    f.FuzzyFile.Path,
+		URL:     f.URL.String(),
+		MIME:    f.MIME.String(),
+		Size:    f.Size,
+		ModTime: f.ModTime.Format(RFC3339TimeFormat),
 	})
 }
 
-func (d Directory) isEmpty() bool { return len(d.Directories) == 0 && len(d.Files) == 0 }
-
-// joins the baseURL with the given relative path in a new URL instance
+// Joins the baseURL with the given relative path in a new URL instance
 func withBaseURL(rel string) (url *url.URL) {
-	url, _ = url.Parse(baseURL.String()) // its clear that there can't be error here :)
+	url, _ = url.Parse(baseURL.String())
 	url.Path = path.Join(baseURL.Path, rel)
 	return
 }
@@ -284,7 +294,6 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 		return
 	}
 
-	// Avoid having the root named "." for estetich purpuses:
 	// Extract an interesting name from the baseURL
 	name := dirInfo.Name()
 	if rel == "." && len(baseURL.Path) > 1 {
@@ -309,7 +318,7 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 				return
 			}
 			if !subdir.isEmpty() || includeEmpty {
-				// include emptydir if isEmptyflag is setted
+				// Include emptydir if isEmptyflag is setted
 				dir.Directories = append(dir.Directories, subdir)
 				fz = append(fz, subfz...)
 			}
@@ -328,7 +337,7 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 	return
 }
 
-func copy(f FuzzyFile) (err error) {
+func copyFile(f FuzzyFile) (err error) {
 	var input []byte
 	if input, err = ioutil.ReadFile(f.SrcPath); err != nil {
 		return fmt.Errorf("Could not open %s for reading:\n%s", f.SrcPath, err)
@@ -352,7 +361,7 @@ func writeCopies(dir Directory, fz []FuzzyFile) (err error) {
 		if f.MIME == linkMIME {
 			continue
 		}
-		if err = copy(f); err != nil {
+		if err = copyFile(f); err != nil {
 			return err
 		}
 	}
@@ -370,6 +379,20 @@ func jsonToFile[T any](path string, v T) (err error) {
 	return nil
 }
 
+// Create a shallow copy of a directory up to depth 2, meaning recursive
+// directory listings are cleared but the directories in the current directory
+// are maintained without stating their children files/directories
+func shallow(dir Directory) Directory {
+	cpy := dir
+	cpy.Directories = make([]Directory, len(dir.Directories))
+	copy(cpy.Directories, dir.Directories)
+	for i := 0; i < len(cpy.Directories); i++ {
+		cpy.Directories[0].Directories = nil
+		cpy.Directories[0].Files = nil
+	}
+	return cpy
+}
+
 func writeJSON(dir *Directory, fz []FuzzyFile) (err error) {
 	// Write the fuzzy.json file in the root directory
 	if len(fz) != 0 {
@@ -379,7 +402,8 @@ func writeJSON(dir *Directory, fz []FuzzyFile) (err error) {
 	}
 
 	// Write the directory metadata
-	if err = jsonToFile(path.Join(dir.DstPath, metadataFileName), dir); err != nil {
+	shallowCopy := shallow(*dir)
+	if err = jsonToFile(path.Join(dir.DstPath, metadataFileName), &shallowCopy); err != nil {
 		return
 	}
 
@@ -465,7 +489,7 @@ func sanitizeDirectories() (err error) {
 		return err
 	}
 
-	// check if outputDir is writable
+	// Check if outputDir is writable
 	if _, err = os.OpenFile(dstDir, os.O_WRONLY, os.ModeDir|os.ModePerm); err != nil && os.IsPermission(err) {
 		return fmt.Errorf("Cannot open output directory for writing: %s\n%s", dstDir, err)
 	}
