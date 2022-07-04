@@ -387,8 +387,8 @@ func shallow(dir Directory) Directory {
 	cpy.Directories = make([]Directory, len(dir.Directories))
 	copy(cpy.Directories, dir.Directories)
 	for i := 0; i < len(cpy.Directories); i++ {
-		cpy.Directories[0].Directories = nil
-		cpy.Directories[0].Files = nil
+		cpy.Directories[i].Directories = nil
+		cpy.Directories[i].Files = nil
 	}
 	return cpy
 }
