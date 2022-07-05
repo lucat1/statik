@@ -57,9 +57,8 @@ const (
 	defaultSrc  = "./"
 	defaultDst  = "site"
 
-	fuzzyFileName     = "fuzzy.json"
-	metadataFileName  = "statik.json"
-	RFC3339TimeFormat = "2006-01-02T15:04:05Z"
+	fuzzyFileName    = "fuzzy.json"
+	metadataFileName = "statik.json"
 )
 
 type HTMLPayload struct {
@@ -92,7 +91,7 @@ func (d *Directory) MarshalJSON() ([]byte, error) {
 		*DirectoryAlias
 	}{
 		URL:            d.URL.String(),
-		ModTime:        d.ModTime.Format(RFC3339TimeFormat),
+		ModTime:        d.ModTime.Format(time.RFC3339),
 		DirectoryAlias: (*DirectoryAlias)(d),
 	})
 }
