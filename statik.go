@@ -79,6 +79,7 @@ type Directory struct {
 	Mode        fs.FileMode `json:"-"`
 	Directories []Directory `json:"directories,omitempty"`
 	Files       []File      `json:"files,omitempty"`
+	GenTime     time.Time   `json:"generated_at"`
 }
 
 func (d Directory) isEmpty() bool { return len(d.Directories) == 0 && len(d.Files) == 0 }
@@ -88,11 +89,13 @@ func (d *Directory) MarshalJSON() ([]byte, error) {
 	return json.Marshal(&struct {
 		URL     string `json:"url"`
 		ModTime string `json:"time"`
+		GenTime string `json:"generated_at"`
 		*DirectoryAlias
 	}{
 		URL:            d.URL.String(),
 		ModTime:        d.ModTime.Format(time.RFC3339),
 		DirectoryAlias: (*DirectoryAlias)(d),
+		GenTime:        d.GenTime.Format(time.RFC3339),
 	})
 }
 
@@ -309,6 +312,7 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 		Size:    humanize.Bytes(uint64(dirInfo.Size())),
 		ModTime: dirInfo.ModTime(),
 		Mode:    dirInfo.Mode(),
+		GenTime: time.Now(),
 	}
 
 	for _, info := range infos {
@@ -439,7 +443,7 @@ func writeHTML(dir *Directory) (err error) {
 	payload := HTMLPayload{
 		Root:       *dir,
 		Stylesheet: template.CSS(style),
-		Today:      time.Now(),
+		Today:      dir.GenTime,
 	}
 
 	// Always append the last segment of the baseURL as a link back to the home
