@@ -141,7 +141,7 @@ func (f *File) MarshalJSON() ([]byte, error) {
 		URL:     f.URL.String(),
 		MIME:    f.MIME.String(),
 		Size:    f.Size,
-		ModTime: f.ModTime.Format(RFC3339TimeFormat),
+		ModTime: f.ModTime.Format(time.RFC3339),
 	})
 }
 
