@@ -29,11 +29,11 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/lucat1/statik:${{  github.ref_name }}
+          tags: "ghcr.io/${{ github.repository }}:${{ github.ref_name }}"
       - name: Build and push
         uses: docker/build-push-action@v3
         if: startsWith(github.event.ref, 'refs/tags/v') != true
         with:
           context: .
           push: true
-          tags: ghcr.io/lucat1/statik:latest
+          tags: ghcr.io/${{ github.repository }}:latest
