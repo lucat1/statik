@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -346,13 +347,27 @@ func walk(base string) (dir Directory, fz []FuzzyFile, err error) {
 }
 
 func copyFile(f FuzzyFile) (err error) {
-	var input []byte
-	if input, err = os.ReadFile(f.SrcPath); err != nil {
+
+	// Open the input file
+	inputStream, err := os.Open(f.SrcPath)
+	if err != nil {
 		return fmt.Errorf("could not open %s for reading:\n%s", f.SrcPath, err)
 	}
-	if err = os.WriteFile(f.DstPath, input, f.Mode); err != nil {
+	defer inputStream.Close()
+
+	// Create the output file, truncating it if it already exists
+	outputStream, err := os.Create(f.DstPath)
+	if err != nil {
 		return fmt.Errorf("could not open %s for writing:\n%s", f.DstPath, err)
 	}
+	defer outputStream.Close()
+
+	// Copy the file by using io.Copy(), which handles large files efficiently
+	if _, err := io.Copy(outputStream, inputStream); err != nil {
+		return fmt.Errorf("error while copying %s to %s:\n%s", f.SrcPath, f.DstPath, err)
+	}
+
+	log.Printf("Copied %s to %s", f.SrcPath, f.DstPath)
 	return nil
 }
 
@@ -478,6 +493,7 @@ func writeHTML(dir *Directory) (err error) {
 	if err = minifier.Minify("text/html", outputHtml, buf); err != nil {
 		return fmt.Errorf("could not minify page output:\n%s", err)
 	}
+	log.Printf("Generated %s", index)
 	return nil
 }
 
