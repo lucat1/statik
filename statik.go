@@ -585,7 +585,12 @@ func main() {
 	log.Print("\tBase URL:\t", baseURL.String())
 
 	// Ugly hack to generate our custom mime, there currently is no way around this
-	createLinkMime()
+	{
+		v := true
+		mimetype.Lookup("text/plain").Extend(func(_ []byte, size uint32) bool { return v }, "text/statik-link", ".link")
+		linkMIME = mimetype.Detect([]byte("some plain text"))
+		v = false
+	}
 
 	minifier = minify.New()
 	minifier.AddFunc("text/css", css.Minify)
@@ -625,11 +630,4 @@ func main() {
 			log.Fatal().Err(err).Msg("Error while generating HTML page listing")
 		}
 	}
-}
-
-func createLinkMime() {
-	v := true
-	mimetype.Lookup("text/plain").Extend(func(_ []byte, size uint32) bool { return v }, "text/statik-link", ".link")
-	linkMIME = mimetype.Detect([]byte("some plain text"))
-	v = false
 }
